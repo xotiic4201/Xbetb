@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+supabase
+python-jose[cryptography]
+bcrypt
+pydantic
+python-multipart
+websockets
+python-dotenv
+httpx
