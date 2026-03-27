@@ -1,4 +1,4 @@
-fastapi==0.104.1
+fastapi
 uvicorn[standard]==0.24.0
 supabase==2.0.4
 python-jose[cryptography]==3.3.0
@@ -7,4 +7,4 @@ pydantic[email]==2.5.0
 python-multipart==0.0.6
 websockets==12.0
 python-dotenv==1.0.0
-httpx==0.25.1
+httpx
