@@ -12,10 +12,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 from supabase import create_client, Client
+import jwt
+import bcrypt
 
 # ==================== Configuration ====================
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")  # Add this to your environment
 SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
@@ -28,8 +31,8 @@ ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 
-# Initialize Supabase
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+# Initialize Supabase with service key for admin operations
+supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 # ==================== Pydantic Models ====================
 class UserCreate(BaseModel):
@@ -72,9 +75,6 @@ class BanUserRequest(BaseModel):
     banned: bool
 
 # ==================== Security Functions ====================
-import jwt
-import bcrypt
-
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
@@ -101,7 +101,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     payload = verify_token(token)
     user_id = payload.get("sub")
     
-    response = supabase.table("profiles").select("*").eq("id", user_id).execute()
+    response = supabase_admin.table("profiles").select("*").eq("id", user_id).execute()
     if not response.data:
         raise HTTPException(status_code=401, detail="User not found")
     
@@ -252,9 +252,12 @@ class ConnectionManager:
                 for uid, player in list(self.crash_state["players"].items()):
                     if player.get("auto") and player["auto"] <= self.crash_state["multiplier"]:
                         win = player["bet"] * self.crash_state["multiplier"]
-                        supabase.table("profiles").update({
-                            "xcoin_balance": supabase.rpc("increment", {"row_id": uid, "amount": win})
-                        }).execute()
+                        # Use service key for admin operations
+                        user = supabase_admin.table("profiles").select("xcoin_balance").eq("id", uid).execute()
+                        if user.data:
+                            supabase_admin.table("profiles").update({
+                                "xcoin_balance": user.data[0]["xcoin_balance"] + win
+                            }).eq("id", uid).execute()
                         del self.crash_state["players"][uid]
                         await self.broadcast({
                             "type": "crash_cashout",
@@ -279,9 +282,9 @@ class ConnectionManager:
         if not self.crash_state["active"]:
             return False
         
-        user = supabase.table("profiles").select("xcoin_balance").eq("id", user_id).execute()
+        user = supabase_admin.table("profiles").select("xcoin_balance").eq("id", user_id).execute()
         if user.data and user.data[0]["xcoin_balance"] >= amount:
-            supabase.table("profiles").update({
+            supabase_admin.table("profiles").update({
                 "xcoin_balance": user.data[0]["xcoin_balance"] - amount
             }).eq("id", user_id).execute()
             self.crash_state["players"][user_id] = {"bet": amount, "auto": auto}
@@ -295,9 +298,9 @@ class ConnectionManager:
         player = self.crash_state["players"][user_id]
         win = player["bet"] * self.crash_state["multiplier"]
         
-        user = supabase.table("profiles").select("xcoin_balance").eq("id", user_id).execute()
+        user = supabase_admin.table("profiles").select("xcoin_balance").eq("id", user_id).execute()
         if user.data:
-            supabase.table("profiles").update({
+            supabase_admin.table("profiles").update({
                 "xcoin_balance": user.data[0]["xcoin_balance"] + win
             }).eq("id", user_id).execute()
         
@@ -332,43 +335,59 @@ app.add_middleware(
 async def create_admin_user():
     """Create admin user from environment variables"""
     try:
-        # Check if admin exists in auth
-        existing = supabase.table("profiles").select("*").eq("email", ADMIN_EMAIL).execute()
+        # Check if admin exists in profiles
+        existing = supabase_admin.table("profiles").select("*").eq("email", ADMIN_EMAIL).execute()
         
         if not existing.data:
             print(f"Creating admin user: {ADMIN_EMAIL}")
             
-            # Create user in Supabase Auth
+            # Check if user exists in auth
             try:
-                auth_response = supabase.auth.admin.create_user({
+                # Try to sign in first to check if user exists
+                auth_response = supabase_admin.auth.sign_in_with_password({
                     "email": ADMIN_EMAIL,
-                    "password": ADMIN_PASSWORD,
-                    "email_confirm": True,
-                    "user_metadata": {
-                        "username": ADMIN_USERNAME,
-                        "role": "admin"
-                    }
+                    "password": ADMIN_PASSWORD
                 })
                 
-                if hasattr(auth_response, 'user') and auth_response.user:
+                if auth_response.user:
                     user_id = auth_response.user.id
-                    
-                    supabase.table("profiles").insert({
-                        "id": user_id,
+                    print(f"Admin already exists in auth, creating profile")
+            except:
+                # User doesn't exist, create them
+                try:
+                    auth_response = supabase_admin.auth.admin.create_user({
                         "email": ADMIN_EMAIL,
-                        "username": ADMIN_USERNAME,
-                        "role": "admin",
-                        "xcoin_balance": 1000000.00,
-                        "xbet_points": 100000,
-                        "client_seed": secrets.token_hex(16),
-                        "nonce": 0
-                    }).execute()
+                        "password": ADMIN_PASSWORD,
+                        "email_confirm": True,
+                        "user_metadata": {
+                            "username": ADMIN_USERNAME,
+                            "role": "admin"
+                        }
+                    })
                     
-                    print(f"Admin user created: {ADMIN_EMAIL}")
-                else:
-                    print("Failed to create admin user")
+                    user_id = auth_response.user.id
+                    print(f"Created admin user in auth")
+                except Exception as e:
+                    print(f"Error creating auth user: {e}")
+                    return
+            
+            # Create profile
+            profile_data = {
+                "id": user_id,
+                "email": ADMIN_EMAIL,
+                "username": ADMIN_USERNAME,
+                "role": "admin",
+                "xcoin_balance": 1000000.00,
+                "xbet_points": 100000,
+                "client_seed": secrets.token_hex(16),
+                "nonce": 0
+            }
+            
+            try:
+                supabase_admin.table("profiles").insert(profile_data).execute()
+                print(f"Admin profile created: {ADMIN_EMAIL}")
             except Exception as e:
-                print(f"Admin creation error: {e}")
+                print(f"Error creating admin profile: {e}")
         else:
             print(f"Admin user exists: {ADMIN_EMAIL}")
     except Exception as e:
@@ -378,11 +397,13 @@ async def create_admin_user():
 @app.post("/api/auth/register")
 async def register(user_data: UserCreate):
     try:
-        existing = supabase.table("profiles").select("*").eq("email", user_data.email).execute()
+        # Check if email already exists
+        existing = supabase_admin.table("profiles").select("*").eq("email", user_data.email).execute()
         if existing.data:
             raise HTTPException(400, "Email already registered")
         
-        auth_resp = supabase.auth.sign_up({
+        # Use supabase auth for registration
+        auth_resp = supabase_admin.auth.sign_up({
             "email": user_data.email,
             "password": user_data.password,
             "options": {
@@ -403,10 +424,11 @@ async def register(user_data: UserCreate):
             "xcoin_balance": 100.00,
             "xbet_points": 0,
             "client_seed": secrets.token_hex(16),
-            "nonce": 0
+            "nonce": 0,
+            "referral_code": secrets.token_hex(4).upper()
         }
         
-        supabase.table("profiles").insert(profile_data).execute()
+        supabase_admin.table("profiles").insert(profile_data).execute()
         token = create_access_token({"sub": auth_resp.user.id})
         
         return {
@@ -418,16 +440,18 @@ async def register(user_data: UserCreate):
                 "role": profile_data["role"],
                 "xcoin_balance": profile_data["xcoin_balance"],
                 "xbet_points": profile_data["xbet_points"],
-                "referral_code": profile_data.get("referral_code", "")
+                "referral_code": profile_data["referral_code"]
             }
         }
     except Exception as e:
+        print(f"Registration error: {e}")
         raise HTTPException(400, str(e))
 
 @app.post("/api/auth/login")
 async def login(user_data: UserLogin):
     try:
-        auth_resp = supabase.auth.sign_in_with_password({
+        # Use supabase auth for login
+        auth_resp = supabase_admin.auth.sign_in_with_password({
             "email": user_data.email,
             "password": user_data.password
         })
@@ -435,16 +459,31 @@ async def login(user_data: UserLogin):
         if not auth_resp.user:
             raise HTTPException(401, "Invalid credentials")
         
-        profile = supabase.table("profiles").select("*").eq("id", auth_resp.user.id).execute()
+        # Get user profile
+        profile = supabase_admin.table("profiles").select("*").eq("id", auth_resp.user.id).execute()
         if not profile.data:
-            raise HTTPException(401, "Profile not found")
-        
-        user = profile.data[0]
+            # Create profile if it doesn't exist (for existing auth users)
+            profile_data = {
+                "id": auth_resp.user.id,
+                "email": user_data.email,
+                "username": user_data.email.split("@")[0],
+                "role": "user",
+                "xcoin_balance": 100.00,
+                "xbet_points": 0,
+                "client_seed": secrets.token_hex(16),
+                "nonce": 0,
+                "referral_code": secrets.token_hex(4).upper()
+            }
+            supabase_admin.table("profiles").insert(profile_data).execute()
+            user = profile_data
+        else:
+            user = profile.data[0]
         
         if user.get("banned"):
             raise HTTPException(403, "Account banned")
         
-        supabase.table("profiles").update({
+        # Update last login
+        supabase_admin.table("profiles").update({
             "last_login": datetime.utcnow().isoformat()
         }).eq("id", user["id"]).execute()
         
@@ -458,11 +497,12 @@ async def login(user_data: UserLogin):
                 "username": user["username"],
                 "role": user["role"],
                 "xcoin_balance": user["xcoin_balance"],
-                "xbet_points": user["xbet_points"],
+                "xbet_points": user.get("xbet_points", 0),
                 "referral_code": user.get("referral_code", "")
             }
         }
     except Exception as e:
+        print(f"Login error: {e}")
         raise HTTPException(401, "Invalid credentials")
 
 @app.post("/api/auth/logout")
@@ -471,7 +511,7 @@ async def logout():
 
 # ==================== Game Routes ====================
 @app.post("/api/games/slots/play")
-async def play_slots(bet: BetRequest, user: dict = Depends(get_current_user)):
+async def play_slots_route(bet: BetRequest, user: dict = Depends(get_current_user)):
     if bet.xcoin_amount <= 0 or bet.xcoin_amount > user["xcoin_balance"]:
         raise HTTPException(400, "Invalid bet amount")
     
@@ -482,12 +522,12 @@ async def play_slots(bet: BetRequest, user: dict = Depends(get_current_user)):
     result = play_slots(server_seed, client_seed, nonce, bet.xcoin_amount)
     new_balance = user["xcoin_balance"] - bet.xcoin_amount + result["win_amount"]
     
-    supabase.table("profiles").update({
+    supabase_admin.table("profiles").update({
         "xcoin_balance": new_balance,
         "nonce": nonce
     }).eq("id", user["id"]).execute()
     
-    supabase.table("bets").insert({
+    supabase_admin.table("bets").insert({
         "user_id": user["id"],
         "game_slug": "slots",
         "xcoin_amount": bet.xcoin_amount,
@@ -510,7 +550,7 @@ async def play_slots(bet: BetRequest, user: dict = Depends(get_current_user)):
     )
 
 @app.post("/api/games/dice/play")
-async def play_dice(bet: BetRequest, user: dict = Depends(get_current_user)):
+async def play_dice_route(bet: BetRequest, user: dict = Depends(get_current_user)):
     if bet.xcoin_amount <= 0 or bet.xcoin_amount > user["xcoin_balance"]:
         raise HTTPException(400, "Invalid bet amount")
     
@@ -527,12 +567,12 @@ async def play_dice(bet: BetRequest, user: dict = Depends(get_current_user)):
     result = play_dice(server_seed, client_seed, nonce, bet.xcoin_amount, target, condition)
     new_balance = user["xcoin_balance"] - bet.xcoin_amount + result["win_amount"]
     
-    supabase.table("profiles").update({
+    supabase_admin.table("profiles").update({
         "xcoin_balance": new_balance,
         "nonce": nonce
     }).eq("id", user["id"]).execute()
     
-    supabase.table("bets").insert({
+    supabase_admin.table("bets").insert({
         "user_id": user["id"],
         "game_slug": "dice",
         "xcoin_amount": bet.xcoin_amount,
@@ -574,7 +614,7 @@ async def withdraw(withdraw: WithdrawRequest, user: dict = Depends(get_current_u
     if withdraw.xcoin_amount < 5000:
         raise HTTPException(400, "Minimum withdrawal is 5000 XCoin")
     
-    supabase.table("withdrawal_requests").insert({
+    supabase_admin.table("withdrawal_requests").insert({
         "user_id": user["id"],
         "xcoin_amount": withdraw.xcoin_amount,
         "address": withdraw.address,
@@ -582,7 +622,7 @@ async def withdraw(withdraw: WithdrawRequest, user: dict = Depends(get_current_u
     }).execute()
     
     new_balance = user["xcoin_balance"] - withdraw.xcoin_amount
-    supabase.table("profiles").update({
+    supabase_admin.table("profiles").update({
         "xcoin_balance": new_balance
     }).eq("id", user["id"]).execute()
     
@@ -590,30 +630,30 @@ async def withdraw(withdraw: WithdrawRequest, user: dict = Depends(get_current_u
 
 @app.get("/api/user/history")
 async def get_history(user: dict = Depends(get_current_user)):
-    bets = supabase.table("bets").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(50).execute()
+    bets = supabase_admin.table("bets").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(50).execute()
     return {"bets": bets.data}
 
 # ==================== Admin Routes ====================
 @app.get("/api/admin/users")
 async def get_all_users(admin: dict = Depends(get_admin_user)):
-    users = supabase.table("profiles").select("*").order("created_at", desc=True).execute()
+    users = supabase_admin.table("profiles").select("*").order("created_at", desc=True).execute()
     return {"users": users.data}
 
 @app.put("/api/admin/users/{user_id}/ban")
 async def ban_user(user_id: str, ban_data: BanUserRequest, admin: dict = Depends(get_admin_user)):
-    user = supabase.table("profiles").select("banned").eq("id", user_id).execute()
+    user = supabase_admin.table("profiles").select("banned").eq("id", user_id).execute()
     if not user.data:
         raise HTTPException(404, "User not found")
     
-    supabase.table("profiles").update({"banned": ban_data.banned}).eq("id", user_id).execute()
+    supabase_admin.table("profiles").update({"banned": ban_data.banned}).eq("id", user_id).execute()
     return {"message": f"User {'banned' if ban_data.banned else 'unbanned'}"}
 
 @app.get("/api/admin/analytics")
 async def get_analytics(admin: dict = Depends(get_admin_user)):
-    total_users = supabase.table("profiles").select("*", count="exact").execute()
-    total_bets = supabase.table("bets").select("*", count="exact").execute()
-    volume = supabase.table("bets").select("xcoin_amount").execute()
-    payout = supabase.table("bets").select("xcoin_payout").execute()
+    total_users = supabase_admin.table("profiles").select("*", count="exact").execute()
+    total_bets = supabase_admin.table("bets").select("*", count="exact").execute()
+    volume = supabase_admin.table("bets").select("xcoin_amount").execute()
+    payout = supabase_admin.table("bets").select("xcoin_payout").execute()
     
     volume_sum = sum(b.get("xcoin_amount", 0) for b in volume.data)
     payout_sum = sum(b.get("xcoin_payout", 0) for b in payout.data)
@@ -642,7 +682,7 @@ async def start_crash_game(admin: dict = Depends(get_admin_user)):
 @app.get("/api/leaderboard")
 async def get_leaderboard():
     # Get top winners
-    top_winners = supabase.table("bets").select("user_id, xcoin_payout").eq("outcome", "win").order("xcoin_payout", desc=True).limit(5).execute()
+    top_winners = supabase_admin.table("bets").select("user_id, xcoin_payout").eq("outcome", "win").order("xcoin_payout", desc=True).limit(5).execute()
     return {
         "biggest_win": {"username": "Player1", "value": 5000},
         "most_games": {"username": "Player2", "value": 150},
@@ -652,13 +692,14 @@ async def get_leaderboard():
 # ==================== WebSocket Routes ====================
 @app.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
+    user_id = None
     try:
         payload = verify_token(token)
         user_id = payload.get("sub")
         
         await manager.connect(websocket, user_id)
         
-        user = supabase.table("profiles").select("username").eq("id", user_id).execute()
+        user = supabase_admin.table("profiles").select("username").eq("id", user_id).execute()
         username = user.data[0]["username"] if user.data else "User"
         
         while True:
@@ -667,7 +708,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             if data.get("type") == "chat":
                 message = data.get("message", "")[:500]
                 
-                supabase.table("chat_messages").insert({
+                supabase_admin.table("chat_messages").insert({
                     "user_id": user_id,
                     "username": username,
                     "room": data.get("room", "global"),
@@ -704,7 +745,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                     })
     
     except WebSocketDisconnect:
-        manager.disconnect(user_id)
+        if user_id:
+            manager.disconnect(user_id)
     except Exception as e:
         print(f"WebSocket error: {e}")
 
