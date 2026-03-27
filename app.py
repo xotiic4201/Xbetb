@@ -11,7 +11,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field, validator
 from supabase import create_client, Client
 
@@ -26,8 +27,8 @@ FRONTEND_URL = os.getenv("FRONTEND_URL")
 PORT = int(os.getenv("PORT", "5000"))
 
 # Stripe Configuration
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 stripe.api_key = STRIPE_SECRET_KEY
 
 # XCoin to USD conversion (1 XCoin = $0.01 USD)
@@ -58,31 +59,15 @@ class UserLogin(BaseModel):
 
 class DepositRequest(BaseModel):
     xcoin_amount: float = Field(..., ge=MIN_DEPOSIT_XCOIN, le=MAX_DEPOSIT_XCOIN)
-    
-    @validator('xcoin_amount')
-    def validate_amount(cls, v):
-        if v < MIN_DEPOSIT_XCOIN:
-            raise ValueError(f"Minimum deposit is {MIN_DEPOSIT_XCOIN} XCoin")
-        return v
 
 class WithdrawRequest(BaseModel):
     xcoin_amount: float = Field(..., ge=MIN_WITHDRAWAL_XCOIN, le=MAX_WITHDRAWAL_XCOIN)
     address: str = Field(..., min_length=10, max_length=200)
-    
-    @validator('xcoin_amount')
-    def validate_amount(cls, v):
-        if v < MIN_WITHDRAWAL_XCOIN:
-            raise ValueError(f"Minimum withdrawal is {MIN_WITHDRAWAL_XCOIN} XCoin")
-        return v
 
 class BetRequest(BaseModel):
     game: str
     xcoin_amount: float = Field(..., gt=0, le=10000)
     params: Optional[Dict] = {}
-
-class GameSettingsUpdate(BaseModel):
-    game: str
-    settings: Dict
 
 class BanUserRequest(BaseModel):
     banned: bool
@@ -211,10 +196,6 @@ def play_dice(server_seed: str, client_seed: str, nonce: int, bet_amount: float,
         "multiplier": multiplier if is_win else 0
     }
 
-def generate_crash_point(server_seed: str, client_seed: str, nonce: int) -> float:
-    r = get_random_number(server_seed, client_seed, nonce)
-    return max(1.00, 1.00 / (1.00 - r + HOUSE_EDGE))
-
 # ==================== WebSocket Manager ====================
 class ConnectionManager:
     def __init__(self):
@@ -230,7 +211,6 @@ class ConnectionManager:
             "round_id": 0
         }
         self.crash_task = None
-        self.poker_games = {}
     
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
@@ -380,6 +360,97 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ==================== Root Endpoint ====================
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>XBet Casino API</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 2rem;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .card {
+                background: rgba(255,255,255,0.1);
+                border-radius: 20px;
+                padding: 2rem;
+                margin: 1rem 0;
+                backdrop-filter: blur(10px);
+            }
+            h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+            .endpoint {
+                background: rgba(0,0,0,0.3);
+                padding: 0.5rem;
+                border-radius: 8px;
+                font-family: monospace;
+                margin: 0.5rem 0;
+            }
+            a {
+                color: #ffd700;
+                text-decoration: none;
+            }
+            a:hover { text-decoration: underline; }
+            .status {
+                display: inline-block;
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                background: #4caf50;
+                margin-right: 8px;
+                animation: pulse 2s infinite;
+            }
+            @keyframes pulse {
+                0% { opacity: 1; }
+                50% { opacity: 0.5; }
+                100% { opacity: 1; }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="card">
+            <h1>🎰 XBet Casino API</h1>
+            <p>Next-generation crypto casino platform</p>
+            <div class="status"></div> <strong>API Status:</strong> Online
+        </div>
+        
+        <div class="card">
+            <h2>📚 API Documentation</h2>
+            <div class="endpoint">📖 <a href="/docs">Interactive API Docs (Swagger UI)</a></div>
+            <div class="endpoint">📘 <a href="/redoc">Alternative Docs (ReDoc)</a></div>
+            <div class="endpoint">❤️ <a href="/health">Health Check</a></div>
+        </div>
+        
+        <div class="card">
+            <h2>🎮 Available Games</h2>
+            <div class="endpoint">🎰 Slots - 3x3 grid with 200x max win</div>
+            <div class="endpoint">🎲 Dice - Provably fair dice game with up to 99x multiplier</div>
+            <div class="endpoint">🚀 Crash - Live multiplier game with auto cashout</div>
+            <div class="endpoint">♠️ Poker - Texas Hold'em (Coming soon)</div>
+        </div>
+        
+        <div class="card">
+            <h2>💰 Payment Methods</h2>
+            <div class="endpoint">💳 Stripe - Credit cards, Apple Pay, Google Pay</div>
+            <div class="endpoint">🪙 XCoin - In-game currency (1 XCoin = $0.01 USD)</div>
+        </div>
+        
+        <div class="card">
+            <h2>🔧 Environment</h2>
+            <div class="endpoint">🌐 Frontend: <a href="http://localhost:3000">http://localhost:3000</a></div>
+            <div class="endpoint">🖥️ API Version: 2.0.0</div>
+            <div class="endpoint">🔐 Authentication: JWT Bearer Token</div>
+        </div>
+    </body>
+    </html>
+    """
+
 # ==================== Admin Creation ====================
 async def create_admin_user():
     try:
@@ -387,6 +458,7 @@ async def create_admin_user():
         if not existing.data:
             print(f"Creating admin user: {ADMIN_EMAIL}")
             try:
+                # Create auth user
                 auth_response = supabase.auth.admin.create_user({
                     "email": ADMIN_EMAIL,
                     "password": ADMIN_PASSWORD,
@@ -502,18 +574,14 @@ async def login(user_data: UserLogin):
                 "username": user["username"],
                 "role": user["role"],
                 "xcoin_balance": user["xcoin_balance"],
-                "xbet_points": user["xbet_points"],
+                "xbet_points": user.get("xbet_points", 0),
                 "referral_code": user.get("referral_code", "")
             }
         }
     except Exception as e:
         raise HTTPException(401, "Invalid credentials")
 
-@app.post("/api/auth/logout")
-async def logout():
-    return {"message": "Logged out"}
-
-# ==================== Stripe Payment Routes ====================
+# ==================== Payment Routes ====================
 @app.post("/api/payments/create-deposit")
 async def create_deposit(deposit: DepositRequest, user: dict = Depends(get_current_user)):
     try:
@@ -523,125 +591,61 @@ async def create_deposit(deposit: DepositRequest, user: dict = Depends(get_curre
         usd_amount = deposit.xcoin_amount * XCOIN_TO_USD
         
         # Create Stripe Checkout Session
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price_data': {
-                    'currency': 'usd',
-                    'product_data': {
-                        'name': f'{deposit.xcoin_amount:,.0f} XCoin',
-                        'description': f'Deposit to XBet Casino - {deposit.xcoin_amount:,.0f} XCoin',
-                        'images': [f'{FRONTEND_URL}/assets/coins/xcoin-gold.png']
+        if STRIPE_SECRET_KEY:
+            session = stripe.checkout.Session.create(
+                payment_method_types=['card'],
+                line_items=[{
+                    'price_data': {
+                        'currency': 'usd',
+                        'product_data': {
+                            'name': f'{deposit.xcoin_amount:,.0f} XCoin',
+                            'description': f'Deposit to XBet Casino - {deposit.xcoin_amount:,.0f} XCoin',
+                        },
+                        'unit_amount': int(usd_amount * 100),
                     },
-                    'unit_amount': int(usd_amount * 100),
-                },
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url=f'{FRONTEND_URL}/deposit/success?session_id={{CHECKOUT_SESSION_ID}}',
-            cancel_url=f'{FRONTEND_URL}/deposit/cancel',
-            metadata={
-                'user_id': user['id'],
-                'xcoin_amount': str(deposit.xcoin_amount),
-                'email': user['email'],
-                'username': user['username']
-            }
-        )
-        
-        # Create pending transaction
-        supabase.table("transactions").insert({
-            "user_id": user["id"],
-            "type": "deposit",
-            "xcoin_amount": deposit.xcoin_amount,
-            "usd_amount": usd_amount,
-            "status": "pending",
-            "stripe_session_id": session.id,
-            "stripe_payment_intent": session.payment_intent
-        }).execute()
-        
-        return {"session_id": session.id, "url": session.url}
+                    'quantity': 1,
+                }],
+                mode='payment',
+                success_url=f'{FRONTEND_URL}/deposit/success?session_id={{CHECKOUT_SESSION_ID}}',
+                cancel_url=f'{FRONTEND_URL}/deposit/cancel',
+                metadata={
+                    'user_id': user['id'],
+                    'xcoin_amount': str(deposit.xcoin_amount),
+                    'email': user['email'],
+                    'username': user['username']
+                }
+            )
+            
+            # Create pending transaction
+            supabase.table("transactions").insert({
+                "user_id": user["id"],
+                "type": "deposit",
+                "xcoin_amount": deposit.xcoin_amount,
+                "usd_amount": usd_amount,
+                "status": "pending",
+                "stripe_session_id": session.id,
+                "stripe_payment_intent": session.payment_intent
+            }).execute()
+            
+            return {"session_id": session.id, "url": session.url}
+        else:
+            # Demo mode - just add coins directly
+            new_balance = user["xcoin_balance"] + deposit.xcoin_amount
+            supabase.table("profiles").update({
+                "xcoin_balance": new_balance
+            }).eq("id", user["id"]).execute()
+            
+            supabase.table("transactions").insert({
+                "user_id": user["id"],
+                "type": "deposit",
+                "xcoin_amount": deposit.xcoin_amount,
+                "usd_amount": usd_amount,
+                "status": "completed"
+            }).execute()
+            
+            return {"message": "Deposit successful (demo mode)", "new_balance": new_balance}
     except Exception as e:
         raise HTTPException(500, f"Payment creation failed: {str(e)}")
-
-@app.post("/api/payments/webhook")
-async def stripe_webhook(request: Request):
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-    
-    if not STRIPE_WEBHOOK_SECRET:
-        raise HTTPException(500, "Webhook secret not configured")
-    
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, STRIPE_WEBHOOK_SECRET
-        )
-    except ValueError:
-        raise HTTPException(400, "Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(400, "Invalid signature")
-    
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        await handle_successful_deposit(session)
-    elif event["type"] == "checkout.session.async_payment_failed":
-        session = event["data"]["object"]
-        await handle_failed_deposit(session)
-    
-    return {"received": True}
-
-async def handle_successful_deposit(session):
-    user_id = session["metadata"]["user_id"]
-    xcoin_amount = float(session["metadata"]["xcoin_amount"])
-    
-    # Update transaction status
-    supabase.table("transactions").update({
-        "status": "completed",
-        "completed_at": datetime.utcnow().isoformat()
-    }).eq("stripe_session_id", session["id"]).execute()
-    
-    # Update user balance
-    user = supabase.table("profiles").select("xcoin_balance, referred_by").eq("id", user_id).execute()
-    if user.data:
-        new_balance = user.data[0]["xcoin_balance"] + xcoin_amount
-        supabase.table("profiles").update({
-            "xcoin_balance": new_balance
-        }).eq("id", user_id).execute()
-        
-        # Handle referral bonus if first deposit
-        referred_by = user.data[0].get("referred_by")
-        if referred_by:
-            referral_bonus = xcoin_amount * 0.10  # 10% referral bonus
-            referrer = supabase.table("profiles").select("xcoin_balance").eq("id", referred_by).execute()
-            if referrer.data:
-                supabase.table("profiles").update({
-                    "xcoin_balance": referrer.data[0]["xcoin_balance"] + referral_bonus
-                }).eq("id", referred_by).execute()
-                
-                # Record referral bonus transaction
-                supabase.table("transactions").insert({
-                    "user_id": referred_by,
-                    "type": "referral",
-                    "xcoin_amount": referral_bonus,
-                    "usd_amount": referral_bonus * XCOIN_TO_USD,
-                    "status": "completed",
-                    "metadata": {"referred_user": user_id, "deposit_amount": xcoin_amount}
-                }).execute()
-
-async def handle_failed_deposit(session):
-    supabase.table("transactions").update({
-        "status": "failed"
-    }).eq("stripe_session_id", session["id"]).execute()
-
-@app.get("/api/payments/rate")
-async def get_xcoin_rate():
-    return {
-        "xcoin_to_usd": XCOIN_TO_USD,
-        "usd_to_xcoin": 1 / XCOIN_TO_USD,
-        "min_deposit_xcoin": MIN_DEPOSIT_XCOIN,
-        "min_deposit_usd": MIN_DEPOSIT_XCOIN * XCOIN_TO_USD,
-        "max_deposit_xcoin": MAX_DEPOSIT_XCOIN,
-        "max_deposit_usd": MAX_DEPOSIT_XCOIN * XCOIN_TO_USD
-    }
 
 # ==================== Game Routes ====================
 @app.post("/api/games/slots/play")
@@ -769,20 +773,6 @@ async def cashout_crash(user: dict = Depends(get_current_user)):
         "win_amount": win
     }
 
-@app.get("/api/games/crash/state")
-async def get_crash_state():
-    return {
-        "active": manager.crash_state["active"],
-        "multiplier": round(manager.crash_state["multiplier"], 2),
-        "players": len(manager.crash_state["players"]),
-        "round_id": manager.crash_state["round_id"]
-    }
-
-@app.post("/api/games/crash/start")
-async def start_crash_game(admin: dict = Depends(get_admin_user)):
-    asyncio.create_task(manager.start_crash_game())
-    return {"message": "Game started"}
-
 # ==================== User Routes ====================
 @app.get("/api/user/balance")
 async def get_balance(user: dict = Depends(get_current_user)):
@@ -830,17 +820,6 @@ async def withdraw(withdraw: WithdrawRequest, user: dict = Depends(get_current_u
     
     return {"message": "Withdrawal request submitted", "new_balance": new_balance}
 
-@app.get("/api/user/history")
-async def get_history(user: dict = Depends(get_current_user)):
-    bets = supabase.table("bets").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(50).execute()
-    transactions = supabase.table("transactions").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(20).execute()
-    return {"bets": bets.data, "transactions": transactions.data}
-
-@app.get("/api/user/transactions")
-async def get_transactions(user: dict = Depends(get_current_user)):
-    txs = supabase.table("transactions").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(50).execute()
-    return {"transactions": txs.data}
-
 # ==================== Reward Routes ====================
 @app.post("/api/rewards/daily")
 async def claim_daily_bonus(user: dict = Depends(get_current_user)):
@@ -886,22 +865,34 @@ async def claim_daily_bonus(user: dict = Depends(get_current_user)):
 @app.get("/api/leaderboard")
 async def get_leaderboard():
     try:
-        # Biggest win
+        # Get biggest win
         biggest_win = supabase.table("bets").select("user_id, xcoin_payout, profiles(username)").eq("outcome", "win").order("xcoin_payout", desc=True).limit(1).execute()
         biggest_win_data = biggest_win.data[0] if biggest_win.data else None
         if biggest_win_data:
             biggest_win_data["username"] = biggest_win_data.get("profiles", {}).get("username", "Unknown")
+            biggest_win_data["value"] = biggest_win_data.get("xcoin_payout", 0)
         
-        # Most games
-        most_games = supabase.rpc("get_most_games").execute() if hasattr(supabase.rpc, "__call__") else None
+        # Get most games played
+        most_games = supabase.table("bets").select("user_id, profiles(username), count(*)").group_by("user_id, profiles(username)").order("count", desc=True).limit(1).execute()
+        most_games_data = most_games.data[0] if most_games.data else None
+        if most_games_data:
+            most_games_data["value"] = most_games_data.get("count", 0)
         
-        # Total wagered
-        total_wagered = supabase.rpc("get_total_wagered").execute() if hasattr(supabase.rpc, "__call__") else None
+        # Get total wagered
+        total_wagered = supabase.table("bets").select("user_id, xcoin_amount, profiles(username)").execute()
+        wagered_dict = {}
+        for bet in total_wagered.data:
+            uid = bet["user_id"]
+            if uid not in wagered_dict:
+                wagered_dict[uid] = {"user_id": uid, "username": bet.get("profiles", {}).get("username", "Unknown"), "total": 0}
+            wagered_dict[uid]["total"] += bet["xcoin_amount"]
+        
+        top_wagered = max(wagered_dict.values(), key=lambda x: x["total"]) if wagered_dict else None
         
         return {
             "biggest_win": biggest_win_data,
-            "most_games": most_games.data[0] if most_games and most_games.data else None,
-            "total_wagered": total_wagered.data[0] if total_wagered and total_wagered.data else None
+            "most_games": most_games_data,
+            "total_wagered": top_wagered
         }
     except Exception as e:
         return {
@@ -909,6 +900,10 @@ async def get_leaderboard():
             "most_games": None,
             "total_wagered": None
         }
+
+@app.get("/api/online-players")
+async def get_online_players():
+    return {"count": len(manager.active_connections)}
 
 # ==================== Admin Routes ====================
 @app.get("/api/admin/users")
@@ -950,27 +945,6 @@ async def get_analytics(admin: dict = Depends(get_admin_user)):
         "total_withdrawals": withdrawal_sum,
         "house_edge": ((volume_sum - payout_sum) / volume_sum * 100) if volume_sum > 0 else 0
     }
-
-@app.get("/api/admin/settings/{game}")
-async def get_game_settings(game: str):
-    settings = supabase.table("game_settings").select("*").eq("game_id", game).execute()
-    if not settings.data:
-        default_settings = {
-            "slots": {"rtp": 96.5, "house_edge": 3.5},
-            "dice": {"house_edge": 1, "min_target": 1, "max_target": 99},
-            "crash": {"max_multiplier": 10000, "curve_speed": 1.03, "house_edge": 1}
-        }
-        return {"game": game, "settings": default_settings.get(game, {})}
-    return settings.data[0]
-
-@app.put("/api/admin/settings/{game}")
-async def update_game_settings(game: str, settings_update: GameSettingsUpdate, admin: dict = Depends(get_admin_user)):
-    supabase.table("game_settings").upsert({
-        "game_id": game,
-        "settings": settings_update.settings,
-        "updated_at": datetime.utcnow().isoformat()
-    }).execute()
-    return {"message": f"{game} settings updated"}
 
 # ==================== WebSocket Routes ====================
 @app.websocket("/ws/{token}")
