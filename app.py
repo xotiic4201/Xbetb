@@ -1,6 +1,12 @@
+# ============================================
+# XBET CASINO - COMPLETE BACKEND (FIXED)
+# Single File FastAPI Application
+# ============================================
+
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, timedelta
@@ -24,6 +30,9 @@ import stripe
 import requests
 from functools import lru_cache
 from dotenv import load_dotenv
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Load environment variables
 load_dotenv()
@@ -31,11 +40,7 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(os.getenv('LOG_FILE', 'logs/xbet.log')),
-        logging.StreamHandler()
-    ]
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -45,7 +50,7 @@ app = FastAPI(title="XBet Casino - Premium Edition", version="3.0.0")
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv('ALLOWED_ORIGINS', '*').split(','),
+    allow_origins=["https://xbet-inky.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,12 +63,14 @@ ALGORITHM = "HS256"
 JWT_EXPIRY = int(os.getenv("JWT_EXPIRY", 86400))
 
 # Stripe Configuration
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
 # Roblox Configuration
-ROBLOX_API_KEY = os.getenv("ROBLOX_API_KEY", "")
-ROBLOX_GROUP_ID = os.getenv("ROBLOX_GROUP_ID", "0")
+ROBLOX_API_KEY = os.getenv("ROBLOX_API_KEY")
+ROBLOX_GROUP_ID = os.getenv("ROBLOX_GROUP_ID")
 ROBLOX_PASS_IDS = {
     100: os.getenv("ROBLOX_PASS_100"),
     500: os.getenv("ROBLOX_PASS_500"),
@@ -73,19 +80,32 @@ ROBLOX_PASS_IDS = {
     50000: os.getenv("ROBLOX_PASS_50000")
 }
 
+# SendGrid Configuration
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
+SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL")
+SENDGRID_FROM_NAME = os.getenv("SENDGRID_FROM_NAME")
+SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO")
+
 # Database Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Redis for real-time data
-redis_client = redis.Redis(
-    host=os.getenv("REDIS_HOST", "localhost"),
-    port=int(os.getenv("REDIS_PORT", 6379)),
-    password=os.getenv("REDIS_PASSWORD", None),
-    db=int(os.getenv("REDIS_DB", 0)),
-    decode_responses=True
-)
+try:
+    redis_client = redis.Redis(
+        host=os.getenv("REDIS_HOST", "localhost"),
+        port=int(os.getenv("REDIS_PORT", 6379)),
+        password=os.getenv("REDIS_PASSWORD", None),
+        db=int(os.getenv("REDIS_DB", 0)),
+        decode_responses=True,
+        socket_connect_timeout=5
+    )
+    redis_client.ping()
+    logger.info("Redis connected successfully")
+except Exception as e:
+    logger.warning(f"Redis connection failed: {e}")
+    redis_client = None
 
 # Models
 class UserRole(str, Enum):
@@ -133,81 +153,13 @@ class StripePayment(BaseModel):
     amount_xcoin: float
     payment_method: str = "card"
 
-# Database initialization with admin user
-def init_database():
-    """Initialize database tables and default data with admin account"""
-    try:
-        # Check if admin exists
-        admin_check = supabase.table("users").select("*").eq("email", "xotiicglizzy@gmail.com").execute()
-        
-        if not admin_check.data:
-            # Create admin user with provided credentials
-            admin_id = str(uuid.uuid4())
-            admin_data = {
-                "id": admin_id,
-                "username": "xotiic",
-                "email": "xotiicglizzy@gmail.com",
-                "password_hash": hash_password("40671Mps19*"),
-                "xcoin_balance": 10000000.0,
-                "role": "admin",
-                "vip_level": 10,
-                "referral_code": "XOTIICVIP",
-                "total_bets": 0,
-                "total_wagered": 0,
-                "total_won": 0,
-                "total_purchases": 0,
-                "total_deposits": 10000000.0,
-                "created_at": datetime.utcnow().isoformat(),
-                "last_login": datetime.utcnow().isoformat()
-            }
-            
-            supabase.table("users").insert(admin_data).execute()
-            logger.info("Admin user created successfully: xotiic")
-        
-        # Create default system settings if not exists
-        settings_check = supabase.table("system_settings").select("*").limit(1).execute()
-        if not settings_check.data:
-            default_settings = [
-                {"key": "house_edge", "value": json.dumps({"slots": 0.025, "blackjack": 0.005, "dice": 0.01, "crash": 0.01, "mines": 0.02, "plinko": 0.03})},
-                {"key": "min_bet", "value": json.dumps({"slots": 1, "blackjack": 5, "dice": 1, "crash": 1, "mines": 1, "plinko": 1})},
-                {"key": "max_bet", "value": json.dumps({"slots": 10000, "blackjack": 5000, "dice": 5000, "crash": 5000, "mines": 5000, "plinko": 5000})},
-                {"key": "withdrawal_limits", "value": json.dumps({"daily": 10000, "weekly": 50000, "monthly": 200000})},
-                {"key": "referral_bonus", "value": json.dumps({"percentage": 10, "max_bonus": 1000})},
-                {"key": "welcome_bonus", "value": json.dumps({"amount": 100, "wagering": 10})},
-                {"key": "daily_bonus", "value": json.dumps({"amount": 100, "streak_multiplier": 1.5})},
-                {"key": "maintenance", "value": json.dumps({"is_active": False, "message": "Site under maintenance"})}
-            ]
-            
-            for setting in default_settings:
-                supabase.table("system_settings").insert(setting).execute()
-            logger.info("Default system settings created")
-        
-        # Create VIP benefits if not exists
-        vip_check = supabase.table("vip_benefits").select("*").limit(1).execute()
-        if not vip_check.data:
-            vip_benefits = [
-                {"vip_level": 1, "required_wagered": 0, "cashback_percentage": 0, "rakeback_percentage": 0, "withdrawal_limit": 1000, "daily_bonus": 0},
-                {"vip_level": 2, "required_wagered": 1000, "cashback_percentage": 1, "rakeback_percentage": 1, "withdrawal_limit": 2000, "daily_bonus": 10},
-                {"vip_level": 3, "required_wagered": 5000, "cashback_percentage": 2, "rakeback_percentage": 2, "withdrawal_limit": 5000, "daily_bonus": 25},
-                {"vip_level": 4, "required_wagered": 25000, "cashback_percentage": 3, "rakeback_percentage": 3, "withdrawal_limit": 10000, "daily_bonus": 50},
-                {"vip_level": 5, "required_wagered": 100000, "cashback_percentage": 4, "rakeback_percentage": 4, "withdrawal_limit": 25000, "daily_bonus": 100},
-                {"vip_level": 6, "required_wagered": 500000, "cashback_percentage": 5, "rakeback_percentage": 5, "withdrawal_limit": 50000, "daily_bonus": 250},
-                {"vip_level": 7, "required_wagered": 1000000, "cashback_percentage": 7, "rakeback_percentage": 7, "withdrawal_limit": 100000, "daily_bonus": 500},
-                {"vip_level": 8, "required_wagered": 5000000, "cashback_percentage": 10, "rakeback_percentage": 10, "withdrawal_limit": 250000, "daily_bonus": 1000},
-                {"vip_level": 9, "required_wagered": 10000000, "cashback_percentage": 12, "rakeback_percentage": 12, "withdrawal_limit": 500000, "daily_bonus": 2500},
-                {"vip_level": 10, "required_wagered": 50000000, "cashback_percentage": 15, "rakeback_percentage": 15, "withdrawal_limit": 1000000, "daily_bonus": 5000}
-            ]
-            
-            for vip in vip_benefits:
-                supabase.table("vip_benefits").insert(vip).execute()
-            logger.info("VIP benefits created")
-            
-    except Exception as e:
-        logger.error(f"Database initialization error: {e}")
+# ============================================
+# HELPER FUNCTIONS
+# ============================================
 
 def hash_password(password: str) -> str:
     """Hash password with bcrypt"""
-    salt = bcrypt.gensalt(rounds=int(os.getenv("BCRYPT_ROUNDS", 12)))
+    salt = bcrypt.gensalt(rounds=12)
     return bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
 
 def verify_password(password: str, hashed: str) -> bool:
@@ -252,12 +204,193 @@ def provably_fair_hash(server_seed: str, client_seed: str, nonce: int) -> str:
     """Generate provably fair hash"""
     return hashlib.sha256(f"{server_seed}:{client_seed}:{nonce}".encode()).hexdigest()
 
-# Auth Routes
+# ============================================
+# EMAIL SERVICE (SendGrid)
+# ============================================
+
+async def send_email(to_email: str, subject: str, html_content: str, text_content: str = None) -> bool:
+    """Send email using SendGrid"""
+    if not SENDGRID_API_KEY:
+        logger.warning("SendGrid API key not configured")
+        return False
+    
+    try:
+        email_data = {
+            "personalizations": [{
+                "to": [{"email": to_email}],
+                "reply_to": {"email": SENDGRID_REPLY_TO}
+            }],
+            "from": {
+                "email": SENDGRID_FROM_EMAIL,
+                "name": SENDGRID_FROM_NAME
+            },
+            "subject": subject,
+            "content": [{
+                "type": "text/html",
+                "value": html_content
+            }]
+        }
+        
+        if text_content:
+            email_data["content"].append({
+                "type": "text/plain",
+                "value": text_content
+            })
+        
+        response = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {SENDGRID_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=email_data,
+            timeout=10
+        )
+        
+        if response.status_code == 202:
+            logger.info(f"Email sent to {to_email}: {subject}")
+            return True
+        else:
+            logger.error(f"SendGrid error {response.status_code}: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Email send error: {e}")
+        return False
+
+def get_welcome_email(username: str) -> str:
+    """Welcome email HTML template"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Welcome to XBET Casino</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                line-height: 1.6;
+                color: #333;
+                background-color: #f4f4f4;
+                margin: 0;
+                padding: 0;
+            }}
+            .container {{
+                max-width: 600px;
+                margin: 20px auto;
+                background: #ffffff;
+                border-radius: 10px;
+                overflow: hidden;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
+            .header {{
+                background: linear-gradient(135deg, #FFD966, #D4AF37);
+                padding: 30px;
+                text-align: center;
+            }}
+            .logo {{
+                font-size: 32px;
+                font-weight: bold;
+                color: #0A0A0F;
+                font-family: 'Orbitron', monospace;
+            }}
+            .content {{
+                padding: 30px;
+            }}
+            .button {{
+                display: inline-block;
+                padding: 12px 24px;
+                background: linear-gradient(135deg, #FFD966, #D4AF37);
+                color: #0A0A0F;
+                text-decoration: none;
+                border-radius: 5px;
+                margin: 20px 0;
+            }}
+            .footer {{
+                background: #f4f4f4;
+                padding: 20px;
+                text-align: center;
+                font-size: 12px;
+                color: #666;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <div class="logo">XBET CASINO</div>
+            </div>
+            <div class="content">
+                <h1>Welcome to XBET, {username}! 🎰</h1>
+                <p>Thank you for joining the ultimate crypto casino experience!</p>
+                <p>Your account has been successfully created with <strong>100 XCoin</strong> welcome bonus.</p>
+                
+                <h3>What you get:</h3>
+                <ul>
+                    <li>🎲 Provably Fair Games (Slots, Dice, Blackjack)</li>
+                    <li>💰 Instant deposits via Stripe & Roblox</li>
+                    <li>👑 VIP Program with exclusive benefits</li>
+                    <li>🎁 Daily bonuses and promotions</li>
+                </ul>
+                
+                <a href="https://xbet.com" class="button">Start Playing Now →</a>
+                
+                <p>Good luck and win big!</p>
+            </div>
+            <div class="footer">
+                <p>© 2024 XBET Casino. All rights reserved.</p>
+                <p>This is an automated message, please do not reply.</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+# ============================================
+# DATABASE INITIALIZATION
+# ============================================
+
+def init_database():
+    """Initialize database tables and default data"""
+    try:
+        # Check if admin exists
+        admin_check = supabase.table("users").select("*").eq("email", "xotiicglizzy@gmail.com").execute()
+        
+        if not admin_check.data:
+            admin_id = str(uuid.uuid4())
+            admin_data = {
+                "id": admin_id,
+                "username": "xotiic",
+                "email": "xotiicglizzy@gmail.com",
+                "password_hash": hash_password("40671Mps19*"),
+                "xcoin_balance": 10000000.0,
+                "role": "admin",
+                "vip_level": 10,
+                "referral_code": "XOTIICVIP",
+                "total_bets": 0,
+                "total_wagered": 0,
+                "total_won": 0,
+                "total_purchases": 0,
+                "total_deposits": 10000000.0,
+                "created_at": datetime.utcnow().isoformat(),
+                "last_login": datetime.utcnow().isoformat()
+            }
+            
+            supabase.table("users").insert(admin_data).execute()
+            logger.info("Admin user created successfully: xotiic")
+            
+    except Exception as e:
+        logger.error(f"Database initialization error: {e}")
+
+# ============================================
+# AUTH ROUTES
+# ============================================
+
 @app.post("/api/auth/register")
 async def register(user: UserRegister):
-    """Register new user with optional Roblox ID"""
+    """Register new user"""
     try:
-        # Check if user exists
         if user.email:
             existing = supabase.table("users").select("*").eq("email", user.email).execute()
             if existing.data:
@@ -272,11 +405,9 @@ async def register(user: UserRegister):
             if existing_roblox.data:
                 raise HTTPException(status_code=400, detail="Roblox ID already linked")
         
-        # Generate referral code
         referral_code = secrets.token_hex(4).upper()
-        
-        # Create user
         user_id = str(uuid.uuid4())
+        
         user_data = {
             "id": user_id,
             "username": user.username,
@@ -296,24 +427,24 @@ async def register(user: UserRegister):
             "last_login": datetime.utcnow().isoformat()
         }
         
-        result = supabase.table("users").insert(user_data).execute()
+        supabase.table("users").insert(user_data).execute()
         
-        # Handle referral if provided
         if user.referral_code:
             referrer = supabase.table("users").select("*").eq("referral_code", user.referral_code).execute()
             if referrer.data:
-                bonus = float(os.getenv("REFERRAL_BONUS_PERCENTAGE", 10)) / 100 * 100
+                bonus = 50
                 new_balance = referrer.data[0]["xcoin_balance"] + bonus
                 supabase.table("users").update({"xcoin_balance": new_balance}).eq("id", referrer.data[0]["id"]).execute()
-                
-                supabase.table("referrals").insert({
-                    "referrer_id": referrer.data[0]["id"],
-                    "referred_id": user_id,
-                    "bonus_amount": bonus,
-                    "created_at": datetime.utcnow().isoformat()
-                }).execute()
         
         token = create_access_token({"sub": user_id, "role": "user"})
+        
+        # Send welcome email if email provided
+        if user.email and SENDGRID_API_KEY:
+            asyncio.create_task(send_email(
+                to_email=user.email,
+                subject="Welcome to XBET Casino! 🎰",
+                html_content=get_welcome_email(user.username)
+            ))
         
         return {
             "token": token,
@@ -336,7 +467,7 @@ async def register(user: UserRegister):
 
 @app.post("/api/auth/login")
 async def login(user: UserLogin):
-    """Login user with email/username or Roblox ID"""
+    """Login user"""
     try:
         query = None
         if user.email:
@@ -365,7 +496,8 @@ async def login(user: UserLogin):
         
         token = create_access_token({"sub": user_data["id"], "role": user_data["role"]})
         
-        redis_client.sadd("online_users", user_data["id"])
+        if redis_client:
+            redis_client.sadd("online_users", user_data["id"])
         
         return {
             "token": token,
@@ -397,10 +529,16 @@ async def get_balance(current_user: dict = Depends(get_current_user)):
         "vip_level": current_user.get("vip_level", 1)
     }
 
-# Payment Routes
+# ============================================
+# PAYMENT ROUTES
+# ============================================
+
 @app.post("/api/payments/create-stripe-session")
 async def create_stripe_session(payment: StripePayment, current_user: dict = Depends(get_current_user)):
     """Create Stripe checkout session"""
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(status_code=400, detail="Stripe not configured")
+    
     try:
         usd_amount = payment.amount_xcoin * 0.01
         
@@ -433,12 +571,9 @@ async def create_stripe_session(payment: StripePayment, current_user: dict = Dep
 
 @app.post("/api/payments/roblox-purchase")
 async def roblox_purchase(purchase: RobloxPurchase, current_user: dict = Depends(get_current_user)):
-    """Process Roblox purchase (like Bloxflip)"""
+    """Process Roblox purchase"""
     try:
-        # Convert Robux to XCoin (100 Robux = 100 XCoin)
         xcoin_amount = purchase.amount_robux
-        
-        # Add XCoin to user balance
         new_balance = current_user["xcoin_balance"] + xcoin_amount
         
         supabase.table("users").update({
@@ -447,28 +582,12 @@ async def roblox_purchase(purchase: RobloxPurchase, current_user: dict = Depends
             "total_deposits": current_user.get("total_deposits", 0) + xcoin_amount
         }).eq("id", current_user["id"]).execute()
         
-        # Record purchase
-        supabase.table("purchases").insert({
-            "id": str(uuid.uuid4()),
-            "user_id": current_user["id"],
-            "amount": xcoin_amount,
-            "currency": "xcoin",
-            "payment_method": "roblox",
-            "roblox_amount": purchase.amount_robux,
-            "roblox_product_id": purchase.product_id,
-            "status": "completed",
-            "completed_at": datetime.utcnow().isoformat(),
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-        
         return {
             "success": True,
             "xcoin_added": xcoin_amount,
             "new_balance": new_balance,
             "message": f"Added {xcoin_amount} XCoin to your account!"
         }
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Roblox purchase error: {e}")
         raise HTTPException(status_code=500, detail="Purchase processing failed")
@@ -487,62 +606,21 @@ async def get_roblox_products():
         ]
     }
 
-# Game Routes - Slots (Enhanced)
-class SlotsGame:
-    SYMBOLS = ["cherry", "lemon", "orange", "plum", "bell", "xbet", "diamond", "crown"]
-    PAYOUTS = {
-        "crown": {3: 200, 4: 1000, 5: 5000},
-        "diamond": {3: 150, 4: 750, 5: 2500},
-        "xbet": {3: 100, 4: 500, 5: 1000},
-        "bell": {3: 50, 4: 200, 5: 500},
-        "plum": {3: 25, 4: 100, 5: 250},
-        "orange": {3: 15, 4: 50, 5: 150},
-        "lemon": {3: 10, 4: 30, 5: 100},
-        "cherry": {3: 5, 4: 20, 5: 50}
-    }
-    
-    @staticmethod
-    def spin(server_seed: str, client_seed: str, nonce: int) -> Dict:
-        hash_result = provably_fair_hash(server_seed, client_seed, nonce)
-        
-        grid = []
-        for i in range(3):
-            row = []
-            for j in range(5):
-                pos = int(hash_result[(i * 5 + j) * 2:(i * 5 + j) * 2 + 2], 16) % 8
-                row.append(SlotsGame.SYMBOLS[pos])
-            grid.append(row)
-        
-        winning_lines = []
-        total_payout = 0
-        
-        for col in range(5):
-            symbol = grid[1][col]
-            count = 1
-            if grid[0][col] == symbol:
-                count += 1
-            if grid[2][col] == symbol:
-                count += 1
-            
-            if count >= 3 and symbol in SlotsGame.PAYOUTS:
-                payout = SlotsGame.PAYOUTS[symbol].get(count, 0)
-                if payout > 0:
-                    winning_lines.append({
-                        "reel": col,
-                        "symbol": symbol,
-                        "count": count,
-                        "payout": payout
-                    })
-                    total_payout += payout
-        
-        multiplier = total_payout / 100 if total_payout > 0 else 0
-        
-        return {
-            "reel_grid": grid,
-            "winning_lines": winning_lines,
-            "total_payout": total_payout,
-            "multiplier": multiplier
-        }
+# ============================================
+# GAME: SLOTS
+# ============================================
+
+SLOTS_SYMBOLS = ["cherry", "lemon", "orange", "plum", "bell", "xbet", "diamond", "crown"]
+SLOTS_PAYOUTS = {
+    "crown": {3: 200, 4: 1000, 5: 5000},
+    "diamond": {3: 150, 4: 750, 5: 2500},
+    "xbet": {3: 100, 4: 500, 5: 1000},
+    "bell": {3: 50, 4: 200, 5: 500},
+    "plum": {3: 25, 4: 100, 5: 250},
+    "orange": {3: 15, 4: 50, 5: 150},
+    "lemon": {3: 10, 4: 30, 5: 100},
+    "cherry": {3: 5, 4: 20, 5: 50}
+}
 
 @app.post("/api/games/slots/play")
 async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user)):
@@ -555,10 +633,29 @@ async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user
         client_seed = bet.params.get("client_seed", generate_client_seed())
         nonce = random.randint(1, 1000000)
         
-        result = SlotsGame.spin(server_seed, client_seed, nonce)
+        hash_result = provably_fair_hash(server_seed, client_seed, nonce)
         
-        win_amount = bet.xcoin_amount * (result["total_payout"] / 100)
+        grid = []
+        for i in range(3):
+            row = []
+            for j in range(5):
+                pos = int(hash_result[(i * 5 + j) * 2:(i * 5 + j) * 2 + 2], 16) % 8
+                row.append(SLOTS_SYMBOLS[pos])
+            grid.append(row)
         
+        total_payout = 0
+        for col in range(5):
+            symbol = grid[1][col]
+            count = 1
+            if grid[0][col] == symbol:
+                count += 1
+            if grid[2][col] == symbol:
+                count += 1
+            
+            if count >= 3 and symbol in SLOTS_PAYOUTS:
+                total_payout += SLOTS_PAYOUTS[symbol].get(count, 0)
+        
+        win_amount = bet.xcoin_amount * (total_payout / 100)
         new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
         
         supabase.table("users").update({
@@ -568,33 +665,16 @@ async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user
             "total_won": current_user.get("total_won", 0) + win_amount
         }).eq("id", current_user["id"]).execute()
         
-        # Record game history
-        supabase.table("game_history").insert({
-            "id": str(uuid.uuid4()),
-            "user_id": current_user["id"],
-            "game_type": "slots",
-            "bet_amount": bet.xcoin_amount,
-            "win_amount": win_amount,
-            "multiplier": result["multiplier"],
-            "outcome": "win" if win_amount > 0 else "lose",
-            "balance_before": current_user["xcoin_balance"],
-            "balance_after": new_balance,
-            "game_data": result,
-            "server_seed": server_seed,
-            "client_seed": client_seed,
-            "nonce": nonce,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
-        
-        redis_client.incr("total_bets")
-        redis_client.incrbyfloat("total_wagered", bet.xcoin_amount)
+        if redis_client:
+            redis_client.incr("total_bets")
+            redis_client.incrbyfloat("total_wagered", bet.xcoin_amount)
         
         return {
-            "result": result,
+            "result": {"reel_grid": grid, "total_payout": total_payout},
             "outcome": "win" if win_amount > 0 else "lose",
             "win_amount": win_amount,
             "new_balance": new_balance,
-            "multiplier": result["multiplier"],
+            "multiplier": total_payout / 100,
             "server_seed": server_seed,
             "client_seed": client_seed,
             "nonce": nonce
@@ -605,7 +685,10 @@ async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user
         logger.error(f"Slots error: {e}")
         raise HTTPException(status_code=500, detail="Game error")
 
-# Dice Game
+# ============================================
+# GAME: DICE
+# ============================================
+
 @app.post("/api/games/dice/play")
 async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)):
     """Play dice game"""
@@ -631,7 +714,6 @@ async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)
         
         multiplier = 99 / target if condition == "under" else 99 / (100 - target)
         win_amount = bet.xcoin_amount * multiplier if win else 0
-        
         new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
         
         supabase.table("users").update({
@@ -640,24 +722,6 @@ async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)
             "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
             "total_won": current_user.get("total_won", 0) + win_amount
         }).eq("id", current_user["id"]).execute()
-        
-        # Record game history
-        supabase.table("game_history").insert({
-            "id": str(uuid.uuid4()),
-            "user_id": current_user["id"],
-            "game_type": "dice",
-            "bet_amount": bet.xcoin_amount,
-            "win_amount": win_amount,
-            "multiplier": multiplier if win else 0,
-            "outcome": "win" if win else "lose",
-            "balance_before": current_user["xcoin_balance"],
-            "balance_after": new_balance,
-            "game_data": {"roll": roll, "target": target, "condition": condition},
-            "server_seed": server_seed,
-            "client_seed": client_seed,
-            "nonce": nonce,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
         
         return {
             "result": {"roll": roll, "condition": condition, "target": target},
@@ -675,19 +739,22 @@ async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)
         logger.error(f"Dice error: {e}")
         raise HTTPException(status_code=500, detail="Game error")
 
-# Admin Routes
+# ============================================
+# ADMIN ROUTES
+# ============================================
+
 @app.get("/api/admin/users")
 async def get_users(current_user: dict = Depends(get_current_user)):
     """Get all users (admin only)"""
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
-    users = supabase.table("users").select("id,username,email,roblox_id,xcoin_balance,role,vip_level,banned,created_at,total_purchases,total_deposits").execute()
+    users = supabase.table("users").select("*").execute()
     return {"users": users.data}
 
 @app.put("/api/admin/users/{user_id}/ban")
 async def ban_user(user_id: str, ban_data: Dict, current_user: dict = Depends(get_current_user)):
-    """Ban or unban user (admin only)"""
+    """Ban or unban user"""
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
@@ -696,63 +763,57 @@ async def ban_user(user_id: str, ban_data: Dict, current_user: dict = Depends(ge
 
 @app.put("/api/admin/users/{user_id}/balance")
 async def update_balance(user_id: str, balance_data: Dict, current_user: dict = Depends(get_current_user)):
-    """Update user balance (admin only)"""
+    """Update user balance"""
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     
     supabase.table("users").update({"xcoin_balance": balance_data.get("balance", 0)}).eq("id", user_id).execute()
     return {"message": "Balance updated"}
 
-@app.put("/api/admin/users/{user_id}/role")
-async def update_role(user_id: str, role_data: Dict, current_user: dict = Depends(get_current_user)):
-    """Update user role (admin only)"""
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    supabase.table("users").update({"role": role_data.get("role", "user")}).eq("id", user_id).execute()
-    return {"message": "Role updated"}
+# ============================================
+# STATS ROUTES
+# ============================================
 
-# Stats Routes
 @app.get("/api/leaderboard")
 async def get_leaderboard():
     """Get top players leaderboard"""
-    users = supabase.table("users").select("username,xcoin_balance,role,vip_level").order("xcoin_balance", desc=True).limit(10).execute()
+    users = supabase.table("users").select("username,xcoin_balance,role").order("xcoin_balance", desc=True).limit(10).execute()
     return {"players": users.data}
 
 @app.get("/api/online-players")
 async def get_online_players():
     """Get online players count"""
-    online_count = redis_client.scard("online_users")
-    return {"count": online_count}
+    count = redis_client.scard("online_users") if redis_client else 0
+    return {"count": count}
 
 @app.get("/api/stats")
 async def get_stats():
     """Get global stats"""
-    total_bets = redis_client.get("total_bets") or 0
-    total_wagered = redis_client.get("total_wagered") or 0
-    
-    # Get total users
-    total_users = supabase.table("users").select("count", count="exact").execute()
+    total_bets = redis_client.get("total_bets") if redis_client else 0
+    total_wagered = redis_client.get("total_wagered") if redis_client else 0
+    online = redis_client.scard("online_users") if redis_client else 0
     
     return {
-        "total_bets": int(total_bets),
-        "total_wagered": float(total_wagered),
-        "online_players": redis_client.scard("online_users"),
-        "total_users": total_users.count if total_users.count else 0
+        "total_bets": int(total_bets or 0),
+        "total_wagered": float(total_wagered or 0),
+        "online_players": online
     }
 
-# Reward Routes
+# ============================================
+# REWARD ROUTES
+# ============================================
+
 @app.post("/api/rewards/daily")
 async def claim_daily_bonus(current_user: dict = Depends(get_current_user)):
     """Claim daily bonus"""
     last_claim = current_user.get("last_daily_claim")
     
     if last_claim:
-        last_claim_date = datetime.fromisoformat(last_claim)
-        if (datetime.utcnow() - last_claim_date).days < 1:
+        last_date = datetime.fromisoformat(last_claim)
+        if (datetime.utcnow() - last_date).days < 1:
             raise HTTPException(status_code=400, detail="Already claimed today")
     
-    bonus = float(os.getenv("DAILY_BONUS_AMOUNT", 100))
+    bonus = 100.0
     new_balance = current_user["xcoin_balance"] + bonus
     
     supabase.table("users").update({
@@ -760,25 +821,12 @@ async def claim_daily_bonus(current_user: dict = Depends(get_current_user)):
         "last_daily_claim": datetime.utcnow().isoformat()
     }).eq("id", current_user["id"]).execute()
     
-    # Record transaction
-    supabase.table("transactions").insert({
-        "id": str(uuid.uuid4()),
-        "user_id": current_user["id"],
-        "type": "bonus",
-        "amount": bonus,
-        "balance_before": current_user["xcoin_balance"],
-        "balance_after": new_balance,
-        "metadata": {"bonus_type": "daily"},
-        "created_at": datetime.utcnow().isoformat()
-    }).execute()
-    
-    return {
-        "bonus": bonus,
-        "new_balance": new_balance,
-        "message": "Daily bonus claimed!"
-    }
+    return {"bonus": bonus, "new_balance": new_balance}
 
-# WebSocket Manager
+# ============================================
+# WEBSOCKET
+# ============================================
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}
@@ -786,26 +834,27 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, user_id: str):
         await websocket.accept()
         self.active_connections[user_id] = websocket
-        redis_client.sadd("online_users", user_id)
+        if redis_client:
+            redis_client.sadd("online_users", user_id)
     
     def disconnect(self, user_id: str):
         if user_id in self.active_connections:
             del self.active_connections[user_id]
-        redis_client.srem("online_users", user_id)
-    
-    async def send_personal_message(self, message: str, user_id: str):
-        if user_id in self.active_connections:
-            await self.active_connections[user_id].send_text(message)
+        if redis_client:
+            redis_client.srem("online_users", user_id)
     
     async def broadcast(self, message: str):
         for connection in self.active_connections.values():
-            await connection.send_text(message)
+            try:
+                await connection.send_text(message)
+            except:
+                pass
 
 manager = ConnectionManager()
 
 @app.websocket("/ws/{token}")
 async def websocket_endpoint(websocket: WebSocket, token: str):
-    """WebSocket endpoint for real-time features"""
+    """WebSocket endpoint"""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
@@ -815,11 +864,6 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             return
         
         await manager.connect(websocket, user_id)
-        
-        await manager.send_personal_message(json.dumps({
-            "type": "connected",
-            "message": "Connected to XBet Casino"
-        }), user_id)
         
         while True:
             data = await websocket.receive_text()
@@ -834,26 +878,33 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         "message": message.get("message", ""),
                         "timestamp": datetime.utcnow().isoformat()
                     }))
-    
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
         manager.disconnect(user_id)
 
-# Initialize database on startup
+# ============================================
+# HEALTH CHECK
+# ============================================
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "3.0.0"
+    }
+
+# ============================================
+# INITIALIZATION
+# ============================================
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database and connections on startup"""
-    try:
-        # Test Redis connection
-        redis_client.ping()
-        logger.info("Redis connected successfully")
-    except Exception as e:
-        logger.warning(f"Redis connection failed: {e}")
-    
-    # Initialize database
+    """Initialize on startup"""
     init_database()
-    logger.info("Database initialization completed")
+    logger.info("XBET Casino backend started successfully")
 
 if __name__ == "__main__":
     import uvicorn
@@ -861,5 +912,5 @@ if __name__ == "__main__":
         app,
         host=os.getenv("HOST", "0.0.0.0"),
         port=int(os.getenv("PORT", 5000)),
-        reload=os.getenv("ENVIRONMENT", "production") == "development"
+        reload=os.getenv("ENVIRONMENT", "development") == "development"
     )
