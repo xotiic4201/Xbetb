@@ -348,42 +348,6 @@ def get_welcome_email(username: str) -> str:
     """
 
 # ============================================
-# DATABASE INITIALIZATION
-# ============================================
-
-def init_database():
-    """Initialize database tables and default data"""
-    try:
-        # Check if admin exists
-        admin_check = supabase.table("users").select("*").eq("email", "xotiicglizzy@gmail.com").execute()
-        
-        if not admin_check.data:
-            admin_id = str(uuid.uuid4())
-            admin_data = {
-                "id": admin_id,
-                "username": "xotiic",
-                "email": "xotiicglizzy@gmail.com",
-                "password_hash": hash_password("40671Mps19*"),
-                "xcoin_balance": 10000000.0,
-                "role": "admin",
-                "vip_level": 10,
-                "referral_code": "XOTIICVIP",
-                "total_bets": 0,
-                "total_wagered": 0,
-                "total_won": 0,
-                "total_purchases": 0,
-                "total_deposits": 10000000.0,
-                "created_at": datetime.utcnow().isoformat(),
-                "last_login": datetime.utcnow().isoformat()
-            }
-            
-            supabase.table("users").insert(admin_data).execute()
-            logger.info("Admin user created successfully: xotiic")
-            
-    except Exception as e:
-        logger.error(f"Database initialization error: {e}")
-
-# ============================================
 # AUTH ROUTES
 # ============================================
 
