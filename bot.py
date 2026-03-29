@@ -1,8 +1,3 @@
-# ============================================
-# XBET CASINO - COMPLETE BACKEND (FIXED)
-# Single File FastAPI Application
-# ============================================
-
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, status, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
