@@ -13,16 +13,12 @@ import json
 import asyncio
 from supabase import create_client, Client
 import os
-from decimal import Decimal, ROUND_DOWN
 import hashlib
-import hmac
-import time
-from enum import Enum
 import uuid
 import logging
 import stripe
 import requests
-from functools import lru_cache
+from enum import Enum
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -36,28 +32,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Initialize FastAPI
-app = FastAPI(title="XBet Casino - Premium Edition", version="3.0.0")
+app = FastAPI(title="XBet Casino API", version="3.0.0")
 
-# CORS - Allow all origins for development
+# CORS - Allow all origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://xbet-inky.vercel.app"],
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["https://xbet-inky.vercel.app"],
-    allow_headers=["https://xbet-inky.vercel.app"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Security
 security = HTTPBearer()
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY", "xbet_super_secret_key_2024_master_ultra_secure")
 ALGORITHM = "HS256"
 JWT_EXPIRY = int(os.getenv("JWT_EXPIRY", 86400))
 
-# Admin Credentials from Environment Variables
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-ADMIN_REFERRAL_CODE = os.getenv("ADMIN_REFERRAL_CODE")
+# Admin Credentials from Environment
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@xbet.com")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin123!")
+ADMIN_REFERRAL_CODE = os.getenv("ADMIN_REFERRAL_CODE", "ADMINVIP")
 
 # Stripe Configuration
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
@@ -68,19 +64,19 @@ if STRIPE_SECRET_KEY:
 ROBLOX_API_KEY = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_GROUP_ID = os.getenv("ROBLOX_GROUP_ID", "")
 ROBLOX_PASS_IDS = {
-    100: os.getenv("ROBLOX_PASS_100"),
-    500: os.getenv("ROBLOX_PASS_500"),
-    1000: os.getenv("ROBLOX_PASS_1000"),
-    5000: os.getenv("ROBLOX_PASS_5000"),
-    10000: os.getenv("ROBLOX_PASS_10000"),
-    50000: os.getenv("ROBLOX_PASS_50000")
+    100: os.getenv("ROBLOX_PASS_100", "xbet_100_robux"),
+    500: os.getenv("ROBLOX_PASS_500", "xbet_500_robux"),
+    1000: os.getenv("ROBLOX_PASS_1000", "xbet_1000_robux"),
+    5000: os.getenv("ROBLOX_PASS_5000", "xbet_5000_robux"),
+    10000: os.getenv("ROBLOX_PASS_10000", "xbet_10000_robux"),
+    50000: os.getenv("ROBLOX_PASS_50000", "xbet_50000_robux")
 }
 
 # SendGrid Configuration
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL")
-SENDGRID_FROM_NAME = os.getenv("SENDGRID_FROM_NAME")
-SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO")
+SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL", "noreply@xbet.com")
+SENDGRID_FROM_NAME = os.getenv("SENDGRID_FROM_NAME", "XBET Casino")
+SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO", "support@xbet.com")
 
 # Database Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -88,23 +84,17 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     logger.error("Supabase credentials not configured!")
-    print("ERROR: SUPABASE_URL and SUPABASE_KEY must be set in .env file")
-    print("Please create a .env file with your Supabase credentials")
 
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
     logger.info("Supabase connected successfully")
 except Exception as e:
     logger.error(f"Supabase connection failed: {e}")
-    print(f"ERROR: Failed to connect to Supabase: {e}")
 
 # Models
 class UserRole(str, Enum):
     USER = "user"
-    VIP = "vip"
-    PREMIUM = "premium"
     ADMIN = "admin"
-    MODERATOR = "moderator"
 
 class GameType(str, Enum):
     SLOTS = "slots"
@@ -113,9 +103,6 @@ class GameType(str, Enum):
     MINES = "mines"
     PLINKO = "plinko"
     DICE = "dice"
-    POKER = "poker"
-    ROULETTE = "roulette"
-    WHEEL = "wheel"
 
 class UserRegister(BaseModel):
     username: str = Field(..., min_length=3, max_length=20)
@@ -128,7 +115,6 @@ class UserLogin(BaseModel):
     username: Optional[str] = None
     email: Optional[EmailStr] = None
     password: str
-    roblox_id: Optional[str] = None
 
 class GameBet(BaseModel):
     game: GameType
@@ -183,33 +169,17 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         return user.data[0]
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.PyJWTError:
+    except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
-
-def generate_server_seed() -> str:
-    """Generate cryptographically secure server seed"""
-    return secrets.token_hex(32)
-
-def generate_client_seed() -> str:
-    """Generate client seed"""
-    return secrets.token_hex(16)
-
-def provably_fair_hash(server_seed: str, client_seed: str, nonce: int) -> str:
-    """Generate provably fair hash"""
-    return hashlib.sha256(f"{server_seed}:{client_seed}:{nonce}".encode()).hexdigest()
 
 # ============================================
 # DATABASE INITIALIZATION
 # ============================================
 
 def init_database():
-    """Initialize database tables and default data"""
+    """Initialize database with default data"""
     try:
-        # Check if users table exists by trying to query it
-        test_query = supabase.table("users").select("*").limit(1).execute()
-        logger.info("Users table exists")
-        
-        # Check if admin exists using email from env
+        # Check if admin exists
         admin_check = supabase.table("users").select("*").eq("email", ADMIN_EMAIL).execute()
         
         if not admin_check.data:
@@ -234,14 +204,9 @@ def init_database():
             }
             
             supabase.table("users").insert(admin_data).execute()
-            logger.info(f"Admin user created successfully: {ADMIN_USERNAME}")
-        else:
-            logger.info("Admin user already exists")
-            
+            logger.info(f"Admin user created: {ADMIN_USERNAME}")
     except Exception as e:
-        logger.error(f"Database initialization error: {e}")
-        print(f"ERROR: Database initialization failed: {e}")
-        print("Please make sure your Supabase tables are created with the SQL schema provided")
+        logger.error(f"Database init error: {e}")
 
 # ============================================
 # AUTH ROUTES
@@ -258,17 +223,16 @@ async def health_check():
     return {
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "3.0.0",
-        "supabase": "connected" if SUPABASE_URL and SUPABASE_KEY else "not configured"
+        "version": "3.0.0"
     }
 
 @app.post("/api/auth/register")
 async def register(user: UserRegister):
     """Register new user"""
     try:
-        logger.info(f"Registration attempt for username: {user.username}")
+        logger.info(f"Registration attempt: {user.username}")
         
-        # Check if email already exists
+        # Check email
         if user.email:
             existing = supabase.table("users").select("*").eq("email", user.email).execute()
             if existing.data:
@@ -277,7 +241,7 @@ async def register(user: UserRegister):
                     content={"detail": "Email already registered"}
                 )
         
-        # Check if username already exists
+        # Check username
         existing_username = supabase.table("users").select("*").eq("username", user.username).execute()
         if existing_username.data:
             return JSONResponse(
@@ -285,7 +249,7 @@ async def register(user: UserRegister):
                 content={"detail": "Username already taken"}
             )
         
-        # Check if Roblox ID already linked
+        # Check Roblox ID
         if user.roblox_id:
             existing_roblox = supabase.table("users").select("*").eq("roblox_id", user.roblox_id).execute()
             if existing_roblox.data:
@@ -294,19 +258,17 @@ async def register(user: UserRegister):
                     content={"detail": "Roblox ID already linked"}
                 )
         
-        # Generate referral code and user ID
+        # Generate IDs
         referral_code = secrets.token_hex(4).upper()
         user_id = str(uuid.uuid4())
         
-        # Hash password
-        hashed_password = hash_password(user.password)
-        
+        # Create user
         user_data = {
             "id": user_id,
             "username": user.username,
             "email": user.email,
             "roblox_id": user.roblox_id or "",
-            "password_hash": hashed_password,
+            "password_hash": hash_password(user.password),
             "xcoin_balance": 100.0,
             "role": "user",
             "vip_level": 1,
@@ -321,7 +283,6 @@ async def register(user: UserRegister):
             "banned": False
         }
         
-        # Insert user into database
         result = supabase.table("users").insert(user_data).execute()
         
         if not result.data:
@@ -330,9 +291,9 @@ async def register(user: UserRegister):
                 content={"detail": "Failed to create user"}
             )
         
-        logger.info(f"User created successfully: {user.username} (ID: {user_id})")
+        logger.info(f"User created: {user.username}")
         
-        # Handle referral if provided
+        # Handle referral
         if user.referral_code:
             try:
                 referrer = supabase.table("users").select("*").eq("referral_code", user.referral_code).execute()
@@ -340,14 +301,13 @@ async def register(user: UserRegister):
                     bonus = 50
                     new_balance = referrer.data[0]["xcoin_balance"] + bonus
                     supabase.table("users").update({"xcoin_balance": new_balance}).eq("id", referrer.data[0]["id"]).execute()
-                    logger.info(f"Referral bonus applied: {user.referral_code}")
+                    logger.info(f"Referral bonus applied")
             except Exception as e:
-                logger.error(f"Referral processing error: {e}")
+                logger.error(f"Referral error: {e}")
         
-        # Create JWT token
+        # Create token
         token = create_access_token({"sub": user_id, "role": "user"})
         
-        # Return success response
         return {
             "token": token,
             "user": {
@@ -375,18 +335,16 @@ async def login(user: UserLogin):
     try:
         logger.info(f"Login attempt")
         
-        # Build query based on login method
+        # Find user
         result = None
         if user.email:
             result = supabase.table("users").select("*").eq("email", user.email).execute()
         elif user.username:
             result = supabase.table("users").select("*").eq("username", user.username).execute()
-        elif user.roblox_id:
-            result = supabase.table("users").select("*").eq("roblox_id", user.roblox_id).execute()
         else:
             return JSONResponse(
                 status_code=400,
-                content={"detail": "Email, username, or Roblox ID required"}
+                content={"detail": "Email or username required"}
             )
         
         if not result.data:
@@ -404,7 +362,7 @@ async def login(user: UserLogin):
                 content={"detail": "Invalid credentials"}
             )
         
-        # Check if banned
+        # Check banned
         if user_data.get("banned", False):
             return JSONResponse(
                 status_code=403,
@@ -416,12 +374,11 @@ async def login(user: UserLogin):
             "last_login": datetime.utcnow().isoformat()
         }).eq("id", user_data["id"]).execute()
         
-        # Create JWT token
+        # Create token
         token = create_access_token({"sub": user_data["id"], "role": user_data["role"]})
         
-        logger.info(f"User logged in successfully: {user_data['username']}")
+        logger.info(f"User logged in: {user_data['username']}")
         
-        # Return user data
         return {
             "token": token,
             "user": {
@@ -455,10 +412,135 @@ async def get_balance(current_user: dict = Depends(get_current_user)):
             "vip_level": current_user.get("vip_level", 1)
         }
     except Exception as e:
-        logger.error(f"Balance error: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={"detail": "Failed to get balance"}
+        )
+
+# ============================================
+# GAME: SLOTS
+# ============================================
+
+SLOTS_SYMBOLS = ["cherry", "lemon", "orange", "plum", "bell", "xbet", "diamond", "crown"]
+SLOTS_PAYOUTS = {
+    "crown": {3: 200, 4: 1000, 5: 5000},
+    "diamond": {3: 150, 4: 750, 5: 2500},
+    "xbet": {3: 100, 4: 500, 5: 1000},
+    "bell": {3: 50, 4: 200, 5: 500},
+    "plum": {3: 25, 4: 100, 5: 250},
+    "orange": {3: 15, 4: 50, 5: 150},
+    "lemon": {3: 10, 4: 30, 5: 100},
+    "cherry": {3: 5, 4: 20, 5: 50}
+}
+
+@app.post("/api/games/slots/play")
+async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user)):
+    """Play slot machine"""
+    try:
+        if bet.xcoin_amount > current_user["xcoin_balance"]:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Insufficient balance"}
+            )
+        
+        # Generate random reel grid
+        grid = []
+        for i in range(3):
+            row = []
+            for j in range(5):
+                row.append(random.choice(SLOTS_SYMBOLS))
+            grid.append(row)
+        
+        # Calculate payouts
+        total_payout = 0
+        for col in range(5):
+            symbol = grid[1][col]
+            count = 1
+            if grid[0][col] == symbol:
+                count += 1
+            if grid[2][col] == symbol:
+                count += 1
+            
+            if count >= 3 and symbol in SLOTS_PAYOUTS:
+                total_payout += SLOTS_PAYOUTS[symbol].get(count, 0)
+        
+        win_amount = bet.xcoin_amount * (total_payout / 100)
+        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
+        
+        # Update user balance
+        supabase.table("users").update({
+            "xcoin_balance": new_balance,
+            "total_bets": current_user.get("total_bets", 0) + 1,
+            "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
+            "total_won": current_user.get("total_won", 0) + win_amount
+        }).eq("id", current_user["id"]).execute()
+        
+        return {
+            "result": {"reel_grid": grid, "total_payout": total_payout},
+            "outcome": "win" if win_amount > 0 else "lose",
+            "win_amount": win_amount,
+            "new_balance": new_balance,
+            "multiplier": total_payout / 100
+        }
+    except Exception as e:
+        logger.error(f"Slots error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Game error"}
+        )
+
+# ============================================
+# GAME: DICE
+# ============================================
+
+@app.post("/api/games/dice/play")
+async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)):
+    """Play dice game"""
+    try:
+        if bet.xcoin_amount > current_user["xcoin_balance"]:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "Insufficient balance"}
+            )
+        
+        target = bet.params.get("target", 50)
+        condition = bet.params.get("condition", "under")
+        
+        # Generate random roll
+        roll = random.uniform(0, 100)
+        
+        # Determine win
+        win = False
+        if condition == "under" and roll < target:
+            win = True
+        elif condition == "over" and roll > target:
+            win = True
+        
+        # Calculate multiplier and win amount
+        multiplier = 99 / target if condition == "under" else 99 / (100 - target)
+        win_amount = bet.xcoin_amount * multiplier if win else 0
+        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
+        
+        # Update user balance
+        supabase.table("users").update({
+            "xcoin_balance": new_balance,
+            "total_bets": current_user.get("total_bets", 0) + 1,
+            "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
+            "total_won": current_user.get("total_won", 0) + win_amount
+        }).eq("id", current_user["id"]).execute()
+        
+        return {
+            "result": {"roll": roll, "condition": condition, "target": target},
+            "outcome": "win" if win else "lose",
+            "win_amount": win_amount,
+            "multiplier": multiplier if win else 0,
+            "new_balance": new_balance
+        }
+    except Exception as e:
+        logger.error(f"Dice error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Game error"}
         )
 
 # ============================================
@@ -491,8 +573,8 @@ async def create_stripe_session(payment: StripePayment, current_user: dict = Dep
                 'quantity': 1,
             }],
             mode='payment',
-            success_url=f"https://xbet-inky.vercel.app/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"https://xbet-inky.vercel.app/cancel",
+            success_url="https://xbet-inky.vercel.app/success?session_id={CHECKOUT_SESSION_ID}",
+            cancel_url="https://xbet-inky.vercel.app/cancel",
             metadata={
                 'user_id': current_user['id'],
                 'xcoin_amount': str(payment.amount_xcoin)
@@ -501,7 +583,7 @@ async def create_stripe_session(payment: StripePayment, current_user: dict = Dep
         
         return {"session_id": session.id, "url": session.url}
     except Exception as e:
-        logger.error(f"Stripe session error: {e}")
+        logger.error(f"Stripe error: {e}")
         return JSONResponse(
             status_code=500,
             content={"detail": "Payment creation failed"}
@@ -546,143 +628,6 @@ async def get_roblox_products():
             {"robux": 50000, "xcoin": 50000, "price_usd": 500.00, "product_id": ROBLOX_PASS_IDS.get(50000, "xbet_50000_robux"), "vip_bonus": True}
         ]
     }
-
-# ============================================
-# GAME: SLOTS
-# ============================================
-
-SLOTS_SYMBOLS = ["cherry", "lemon", "orange", "plum", "bell", "xbet", "diamond", "crown"]
-SLOTS_PAYOUTS = {
-    "crown": {3: 200, 4: 1000, 5: 5000},
-    "diamond": {3: 150, 4: 750, 5: 2500},
-    "xbet": {3: 100, 4: 500, 5: 1000},
-    "bell": {3: 50, 4: 200, 5: 500},
-    "plum": {3: 25, 4: 100, 5: 250},
-    "orange": {3: 15, 4: 50, 5: 150},
-    "lemon": {3: 10, 4: 30, 5: 100},
-    "cherry": {3: 5, 4: 20, 5: 50}
-}
-
-@app.post("/api/games/slots/play")
-async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user)):
-    """Play slot machine"""
-    try:
-        if bet.xcoin_amount > current_user["xcoin_balance"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Insufficient balance"}
-            )
-        
-        server_seed = generate_server_seed()
-        client_seed = bet.params.get("client_seed", generate_client_seed())
-        nonce = random.randint(1, 1000000)
-        
-        hash_result = provably_fair_hash(server_seed, client_seed, nonce)
-        
-        grid = []
-        for i in range(3):
-            row = []
-            for j in range(5):
-                pos = int(hash_result[(i * 5 + j) * 2:(i * 5 + j) * 2 + 2], 16) % 8
-                row.append(SLOTS_SYMBOLS[pos])
-            grid.append(row)
-        
-        total_payout = 0
-        for col in range(5):
-            symbol = grid[1][col]
-            count = 1
-            if grid[0][col] == symbol:
-                count += 1
-            if grid[2][col] == symbol:
-                count += 1
-            
-            if count >= 3 and symbol in SLOTS_PAYOUTS:
-                total_payout += SLOTS_PAYOUTS[symbol].get(count, 0)
-        
-        win_amount = bet.xcoin_amount * (total_payout / 100)
-        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
-        
-        supabase.table("users").update({
-            "xcoin_balance": new_balance,
-            "total_bets": current_user.get("total_bets", 0) + 1,
-            "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
-            "total_won": current_user.get("total_won", 0) + win_amount
-        }).eq("id", current_user["id"]).execute()
-        
-        return {
-            "result": {"reel_grid": grid, "total_payout": total_payout},
-            "outcome": "win" if win_amount > 0 else "lose",
-            "win_amount": win_amount,
-            "new_balance": new_balance,
-            "multiplier": total_payout / 100,
-            "server_seed": server_seed,
-            "client_seed": client_seed,
-            "nonce": nonce
-        }
-    except Exception as e:
-        logger.error(f"Slots error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-# ============================================
-# GAME: DICE
-# ============================================
-
-@app.post("/api/games/dice/play")
-async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)):
-    """Play dice game"""
-    try:
-        if bet.xcoin_amount > current_user["xcoin_balance"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Insufficient balance"}
-            )
-        
-        target = bet.params.get("target", 50)
-        condition = bet.params.get("condition", "under")
-        
-        server_seed = generate_server_seed()
-        client_seed = bet.params.get("client_seed", generate_client_seed())
-        nonce = random.randint(1, 1000000)
-        
-        hash_result = provably_fair_hash(server_seed, client_seed, nonce)
-        roll = (int(hash_result[:8], 16) % 10001) / 100
-        
-        win = False
-        if condition == "under" and roll < target:
-            win = True
-        elif condition == "over" and roll > target:
-            win = True
-        
-        multiplier = 99 / target if condition == "under" else 99 / (100 - target)
-        win_amount = bet.xcoin_amount * multiplier if win else 0
-        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
-        
-        supabase.table("users").update({
-            "xcoin_balance": new_balance,
-            "total_bets": current_user.get("total_bets", 0) + 1,
-            "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
-            "total_won": current_user.get("total_won", 0) + win_amount
-        }).eq("id", current_user["id"]).execute()
-        
-        return {
-            "result": {"roll": roll, "condition": condition, "target": target},
-            "outcome": "win" if win else "lose",
-            "win_amount": win_amount,
-            "multiplier": multiplier if win else 0,
-            "new_balance": new_balance,
-            "server_seed": server_seed,
-            "client_seed": client_seed,
-            "nonce": nonce
-        }
-    except Exception as e:
-        logger.error(f"Dice error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
 
 # ============================================
 # ADMIN ROUTES
@@ -855,31 +800,5 @@ async def startup_event():
 
 if __name__ == "__main__":
     import uvicorn
-    import sys
-    
     port = int(os.getenv("PORT", 5000))
-    host = os.getenv("HOST", "0.0.0.0")
-    
-    print(f"\n{'='*50}")
-    print(f"XBET Casino Backend Starting...")
-    print(f"Host: {host}")
-    print(f"Port: {port}")
-    print(f"Admin Email: {ADMIN_EMAIL}")
-    print(f"Admin Username: {ADMIN_USERNAME}")
-    print(f"Supabase URL: {SUPABASE_URL[:50] if SUPABASE_URL else 'NOT SET'}...")
-    print(f"{'='*50}\n")
-    
-    try:
-        uvicorn.run(
-            app,
-            host=host,
-            port=port,
-            reload=False,
-            log_level="info"
-        )
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\nERROR: Failed to start server: {e}")
-        sys.exit(1)
+    uvicorn.run(app, host="0.0.0.0", port=port)
