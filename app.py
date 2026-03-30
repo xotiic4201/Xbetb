@@ -403,30 +403,25 @@ async def login(user: UserLogin):
                 content={"detail": "Account banned"}
             )
         
-        # Update last login - FIXED for TIMESTAMP WITH TIME ZONE
+        # Update last login - FIXED: Use string format without timezone
         try:
-            from datetime import datetime
-            import pytz
+            # Simple string format that Supabase accepts
+            now = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Get current UTC time with timezone
-            now = datetime.utcnow().replace(tzinfo=pytz.UTC)
-            now_str = now.isoformat()
-            
-            # Update last_login
+            # Update using a simple string
             supabase.table("users").update({
-                "last_login": now_str
+                "last_login": now
             }).eq("id", user_data["id"]).execute()
             
             logger.info(f"Updated last_login for user: {user_data['username']}")
-            
-        except Exception as e:
-            # If update fails, log but don't block login
-            logger.warning(f"Could not update last_login: {e}")
+        except Exception as update_error:
+            # Log but don't fail - login should still work
+            logger.warning(f"Could not update last_login: {update_error}")
         
         # Create token
         token = create_access_token({"sub": user_data["id"], "role": user_data["role"]})
         
-        logger.info(f"User logged in: {user_data['username']}")
+        logger.info(f"User logged in successfully: {user_data['username']}")
         
         return {
             "token": token,
@@ -444,6 +439,8 @@ async def login(user: UserLogin):
         
     except Exception as e:
         logger.error(f"Login error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return JSONResponse(
             status_code=500,
             content={"detail": f"Login failed: {str(e)}"}
