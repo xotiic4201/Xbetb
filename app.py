@@ -37,7 +37,7 @@ app = FastAPI(title="XBet Casino API", version="3.0.0")
 # CORS - Allow all origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://xbet-inky.vercel.app/"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
