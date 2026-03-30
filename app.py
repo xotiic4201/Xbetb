@@ -15,14 +15,10 @@ from supabase import create_client, Client
 import os
 from decimal import Decimal, ROUND_DOWN
 import hashlib
-import hmac
-import time
-from enum import Enum
 import uuid
 import logging
 import stripe
 import requests
-from functools import lru_cache
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -38,16 +34,10 @@ logger = logging.getLogger(__name__)
 # Initialize FastAPI
 app = FastAPI(title="XBet Casino - Premium Edition", version="3.0.0")
 
-# CORS - Allow multiple origins
+# CORS - Allow all origins for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://xbet-inky.vercel.app",
-        "http://localhost:3000",
-        "http://localhost:5000",
-        "https://xbetb.onrender.com",
-        "*"
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -63,7 +53,6 @@ JWT_EXPIRY = int(os.getenv("JWT_EXPIRY", 86400))
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
 # Roblox Configuration
 ROBLOX_API_KEY = os.getenv("ROBLOX_API_KEY", "")
@@ -89,9 +78,17 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
     logger.error("Supabase credentials not configured!")
-    raise Exception("Supabase credentials not configured")
+    print("ERROR: SUPABASE_URL and SUPABASE_KEY must be set in .env file")
+    print("Please create a .env file with your Supabase credentials")
+    exit(1)
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+try:
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("Supabase connected successfully")
+except Exception as e:
+    logger.error(f"Supabase connection failed: {e}")
+    print(f"ERROR: Failed to connect to Supabase: {e}")
+    exit(1)
 
 # Models
 class UserRole(str, Enum):
@@ -200,7 +197,11 @@ def provably_fair_hash(server_seed: str, client_seed: str, nonce: int) -> str:
 def init_database():
     """Initialize database tables and default data"""
     try:
-        # Check if users table exists and has admin
+        # Check if users table exists by trying to query it
+        test_query = supabase.table("users").select("*").limit(1).execute()
+        logger.info("Users table exists")
+        
+        # Check if admin exists
         admin_check = supabase.table("users").select("*").eq("email", "xotiicglizzy@gmail.com").execute()
         
         if not admin_check.data:
@@ -231,14 +232,31 @@ def init_database():
             
     except Exception as e:
         logger.error(f"Database initialization error: {e}")
+        print(f"ERROR: Database initialization failed: {e}")
+        print("Please make sure your Supabase tables are created with the SQL schema provided")
 
 # ============================================
-# AUTH ROUTES (FIXED)
+# AUTH ROUTES
 # ============================================
+
+@app.get("/")
+async def root():
+    """Root endpoint"""
+    return {"message": "XBET Casino API is running", "status": "online", "version": "3.0.0"}
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "3.0.0",
+        "supabase": "connected"
+    }
 
 @app.post("/api/auth/register")
 async def register(user: UserRegister):
-    """Register new user - Fixed with proper error handling"""
+    """Register new user"""
     try:
         logger.info(f"Registration attempt for username: {user.username}")
         
@@ -246,7 +264,6 @@ async def register(user: UserRegister):
         if user.email:
             existing = supabase.table("users").select("*").eq("email", user.email).execute()
             if existing.data:
-                logger.warning(f"Email already registered: {user.email}")
                 return JSONResponse(
                     status_code=400,
                     content={"detail": "Email already registered"}
@@ -255,7 +272,6 @@ async def register(user: UserRegister):
         # Check if username already exists
         existing_username = supabase.table("users").select("*").eq("username", user.username).execute()
         if existing_username.data:
-            logger.warning(f"Username already taken: {user.username}")
             return JSONResponse(
                 status_code=400,
                 content={"detail": "Username already taken"}
@@ -265,7 +281,6 @@ async def register(user: UserRegister):
         if user.roblox_id:
             existing_roblox = supabase.table("users").select("*").eq("roblox_id", user.roblox_id).execute()
             if existing_roblox.data:
-                logger.warning(f"Roblox ID already linked: {user.roblox_id}")
                 return JSONResponse(
                     status_code=400,
                     content={"detail": "Roblox ID already linked"}
@@ -302,7 +317,6 @@ async def register(user: UserRegister):
         result = supabase.table("users").insert(user_data).execute()
         
         if not result.data:
-            logger.error("Failed to insert user into database")
             return JSONResponse(
                 status_code=500,
                 content={"detail": "Failed to create user"}
@@ -349,9 +363,9 @@ async def register(user: UserRegister):
 
 @app.post("/api/auth/login")
 async def login(user: UserLogin):
-    """Login user - Fixed with proper error handling"""
+    """Login user"""
     try:
-        logger.info(f"Login attempt for: {user.email or user.username or user.roblox_id}")
+        logger.info(f"Login attempt")
         
         # Build query based on login method
         result = None
@@ -368,7 +382,6 @@ async def login(user: UserLogin):
             )
         
         if not result.data:
-            logger.warning(f"No user found")
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid credentials"}
@@ -378,7 +391,6 @@ async def login(user: UserLogin):
         
         # Verify password
         if not verify_password(user.password, user_data["password_hash"]):
-            logger.warning(f"Invalid password for user: {user_data['username']}")
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid credentials"}
@@ -386,7 +398,6 @@ async def login(user: UserLogin):
         
         # Check if banned
         if user_data.get("banned", False):
-            logger.warning(f"Banned user attempted login: {user_data['username']}")
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Account banned"}
@@ -472,8 +483,8 @@ async def create_stripe_session(payment: StripePayment, current_user: dict = Dep
                 'quantity': 1,
             }],
             mode='payment',
-            success_url=f"{os.getenv('FRONTEND_URL', 'https://xbet-inky.vercel.app')}/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{os.getenv('FRONTEND_URL', 'https://xbet-inky.vercel.app')}/cancel",
+            success_url=f"https://xbet-inky.vercel.app/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"https://xbet-inky.vercel.app/cancel",
             metadata={
                 'user_id': current_user['id'],
                 'xcoin_amount': str(payment.amount_xcoin)
@@ -666,190 +677,6 @@ async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)
         )
 
 # ============================================
-# GAME: BLACKJACK (Basic Implementation)
-# ============================================
-
-# Store active blackjack games in memory (since no Redis)
-blackjack_games = {}
-
-def calculate_blackjack_score(hand):
-    score = 0
-    aces = 0
-    for card in hand:
-        if card['value'] in ['J', 'Q', 'K']:
-            score += 10
-        elif card['value'] == 'A':
-            aces += 1
-            score += 11
-        else:
-            score += int(card['value'])
-    
-    while score > 21 and aces > 0:
-        score -= 10
-        aces -= 1
-    
-    return score
-
-@app.post("/api/games/blackjack/start")
-async def start_blackjack(bet: GameBet, current_user: dict = Depends(get_current_user)):
-    """Start blackjack game"""
-    try:
-        if bet.xcoin_amount > current_user["xcoin_balance"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Insufficient balance"}
-            )
-        
-        suits = ['♥', '♦', '♣', '♠']
-        values = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
-        
-        deck = []
-        for suit in suits:
-            for value in values:
-                deck.append({"suit": suit, "value": value})
-        random.shuffle(deck)
-        
-        player_hand = [deck.pop(), deck.pop()]
-        dealer_hand = [deck.pop(), deck.pop()]
-        
-        game_id = str(uuid.uuid4())
-        blackjack_games[game_id] = {
-            "player_hand": player_hand,
-            "dealer_hand": dealer_hand,
-            "deck": deck,
-            "bet": bet.xcoin_amount,
-            "game_over": False
-        }
-        
-        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount
-        supabase.table("users").update({"xcoin_balance": new_balance}).eq("id", current_user["id"]).execute()
-        
-        return {
-            "game_id": game_id,
-            "player_hand": player_hand,
-            "dealer_hand": [dealer_hand[0], {"suit": "?", "value": "?"}],
-            "player_score": calculate_blackjack_score(player_hand),
-            "new_balance": new_balance
-        }
-    except Exception as e:
-        logger.error(f"Blackjack start error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-@app.post("/api/games/blackjack/hit")
-async def blackjack_hit(game_data: Dict, current_user: dict = Depends(get_current_user)):
-    """Hit in blackjack"""
-    try:
-        game_id = game_data.get("game_id")
-        if not game_id or game_id not in blackjack_games:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Invalid game"}
-            )
-        
-        game = blackjack_games[game_id]
-        if game["game_over"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Game already over"}
-            )
-        
-        deck = game["deck"]
-        if not deck:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "No cards left"}
-            )
-        
-        new_card = deck.pop()
-        game["player_hand"].append(new_card)
-        player_score = calculate_blackjack_score(game["player_hand"])
-        
-        if player_score > 21:
-            game["game_over"] = True
-            result = "lose"
-            win_amount = 0
-        else:
-            result = None
-            win_amount = None
-        
-        return {
-            "player_hand": game["player_hand"],
-            "player_score": player_score,
-            "result": result,
-            "game_over": game["game_over"],
-            "win_amount": win_amount
-        }
-    except Exception as e:
-        logger.error(f"Blackjack hit error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-@app.post("/api/games/blackjack/stand")
-async def blackjack_stand(game_data: Dict, current_user: dict = Depends(get_current_user)):
-    """Stand in blackjack"""
-    try:
-        game_id = game_data.get("game_id")
-        if not game_id or game_id not in blackjack_games:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Invalid game"}
-            )
-        
-        game = blackjack_games[game_id]
-        if game["game_over"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Game already over"}
-            )
-        
-        dealer_hand = game["dealer_hand"]
-        deck = game["deck"]
-        player_score = calculate_blackjack_score(game["player_hand"])
-        dealer_score = calculate_blackjack_score(dealer_hand)
-        
-        while dealer_score < 17 and deck:
-            new_card = deck.pop()
-            dealer_hand.append(new_card)
-            dealer_score = calculate_blackjack_score(dealer_hand)
-        
-        if dealer_score > 21 or player_score > dealer_score:
-            result = "win"
-            win_amount = game["bet"] * 2
-        elif player_score == dealer_score:
-            result = "push"
-            win_amount = game["bet"]
-        else:
-            result = "lose"
-            win_amount = 0
-        
-        new_balance = current_user["xcoin_balance"] + win_amount
-        supabase.table("users").update({"xcoin_balance": new_balance}).eq("id", current_user["id"]).execute()
-        
-        game["game_over"] = True
-        del blackjack_games[game_id]
-        
-        return {
-            "player_hand": game["player_hand"],
-            "dealer_hand": dealer_hand,
-            "player_score": player_score,
-            "dealer_score": dealer_score,
-            "result": result,
-            "win_amount": win_amount,
-            "new_balance": new_balance
-        }
-    except Exception as e:
-        logger.error(f"Blackjack stand error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-# ============================================
 # ADMIN ROUTES
 # ============================================
 
@@ -901,7 +728,7 @@ async def get_leaderboard():
 
 @app.get("/api/online-players")
 async def get_online_players():
-    """Get online players count (placeholder since no Redis)"""
+    """Get online players count"""
     return {"count": 0}
 
 @app.get("/api/stats")
@@ -951,89 +778,40 @@ async def claim_daily_bonus(current_user: dict = Depends(get_current_user)):
     return {"bonus": bonus, "new_balance": new_balance}
 
 # ============================================
-# WEBSOCKET (Basic)
-# ============================================
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
-    
-    async def connect(self, websocket: WebSocket, user_id: str):
-        await websocket.accept()
-        self.active_connections[user_id] = websocket
-    
-    def disconnect(self, user_id: str):
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-    
-    async def broadcast(self, message: str):
-        for connection in self.active_connections.values():
-            try:
-                await connection.send_text(message)
-            except:
-                pass
-
-manager = ConnectionManager()
-
-@app.websocket("/ws/{token}")
-async def websocket_endpoint(websocket: WebSocket, token: str):
-    """WebSocket endpoint"""
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        
-        if not user_id:
-            await websocket.close(code=1008)
-            return
-        
-        await manager.connect(websocket, user_id)
-        
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message.get("type") == "chat":
-                user = supabase.table("users").select("username").eq("id", user_id).execute()
-                if user.data:
-                    await manager.broadcast(json.dumps({
-                        "type": "chat",
-                        "username": user.data[0]["username"],
-                        "message": message.get("message", ""),
-                        "timestamp": datetime.utcnow().isoformat()
-                    }))
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        manager.disconnect(user_id)
-
-# ============================================
-# HEALTH CHECK
-# ============================================
-
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "ok",
-        "timestamp": datetime.utcnow().isoformat(),
-        "version": "3.0.0"
-    }
-
-# ============================================
 # INITIALIZATION
 # ============================================
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize on startup"""
+    logger.info("Starting XBET Casino backend...")
     init_database()
     logger.info("XBET Casino backend started successfully")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", 5000)),
-        reload=os.getenv("ENVIRONMENT", "development") == "development"
-    )
+    import sys
+    
+    port = int(os.getenv("PORT", 5000))
+    host = os.getenv("HOST", "0.0.0.0")
+    
+    print(f"\n{'='*50}")
+    print(f"XBET Casino Backend Starting...")
+    print(f"Host: {host}")
+    print(f"Port: {port}")
+    print(f"Supabase URL: {SUPABASE_URL[:50]}...")
+    print(f"{'='*50}\n")
+    
+    try:
+        uvicorn.run(
+            app,
+            host=host,
+            port=port,
+            reload=False
+        )
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nERROR: Failed to start server: {e}")
+        sys.exit(1)
