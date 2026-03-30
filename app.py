@@ -44,15 +44,15 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY", "your-super-secret-key-change-this-in-production")
 ALGORITHM = "HS256"
 JWT_EXPIRY = int(os.getenv("JWT_EXPIRY", 86400))
 
 # Admin Credentials
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-ADMIN_REFERRAL_CODE = os.getenv("ADMIN_REFERRAL_CODE")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "xotiicglizzy@gmail.com")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "xotiic")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "40671Mps19*")
+ADMIN_REFERRAL_CODE = os.getenv("ADMIN_REFERRAL_CODE", "XOTIICVIP")
 
 # Stripe Configuration
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
@@ -60,26 +60,24 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
     logger.info("Stripe configured successfully")
-else:
-    logger.warning("Stripe secret key not configured")
 
 # Roblox Configuration
 ROBLOX_API_KEY = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_GROUP_ID = os.getenv("ROBLOX_GROUP_ID", "")
 ROBLOX_PASS_IDS = {
-    100: os.getenv("ROBLOX_PASS_100"),
-    500: os.getenv("ROBLOX_PASS_500"),
-    1000: os.getenv("ROBLOX_PASS_1000"),
-    5000: os.getenv("ROBLOX_PASS_5000"),
-    10000: os.getenv("ROBLOX_PASS_10000"),
-    50000: os.getenv("ROBLOX_PASS_50000")
+    100: os.getenv("ROBLOX_PASS_100", "xbet_100"),
+    500: os.getenv("ROBLOX_PASS_500", "xbet_500"),
+    1000: os.getenv("ROBLOX_PASS_1000", "xbet_1000"),
+    5000: os.getenv("ROBLOX_PASS_5000", "xbet_5000"),
+    10000: os.getenv("ROBLOX_PASS_10000", "xbet_10000"),
+    50000: os.getenv("ROBLOX_PASS_50000", "xbet_50000")
 }
 
 # SendGrid Configuration
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL")
+SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL", "noreply@xbet.com")
 SENDGRID_FROM_NAME = os.getenv("SENDGRID_FROM_NAME", "XBET Casino")
-SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO")
+SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO", "support@xbet.com")
 
 # Database Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -101,18 +99,21 @@ except Exception as e:
 
 class UserRole(str, Enum):
     USER = "user"
+    VIP = "vip"
+    PREMIUM = "premium"
+    MODERATOR = "moderator"
     ADMIN = "admin"
 
 class GameType(str, Enum):
     SLOTS = "slots"
-    DICE = "dice"
+    BLACKJACK = "blackjack"
     CRASH = "crash"
     MINES = "mines"
     PLINKO = "plinko"
-    BLACKJACK = "blackjack"
+    DICE = "dice"
 
 class UserRegister(BaseModel):
-    username: str = Field(..., min_length=3, max_length=20)
+    username: str = Field(..., min_length=3, max_length=50)
     email: Optional[str] = None
     password: str = Field(..., min_length=6)
     roblox_id: Optional[str] = None
@@ -213,8 +214,7 @@ def init_database():
                 "total_deposits": 10000000.0,
                 "created_at": now,
                 "last_login": now,
-                "banned": False,
-                "email_verified": True
+                "banned": False
             }
             
             supabase.table("users").insert(admin_data).execute()
@@ -284,7 +284,6 @@ async def register(user: UserRegister):
                 )
         
         # Generate IDs
-        referral_code = secrets.token_hex(4).upper()
         user_id = str(uuid.uuid4())
         now = datetime.utcnow().isoformat()
         
@@ -298,7 +297,6 @@ async def register(user: UserRegister):
             "xcoin_balance": 1000.0,
             "role": "user",
             "vip_level": 1,
-            "referral_code": referral_code,
             "total_bets": 0,
             "total_wagered": 0.0,
             "total_won": 0.0,
@@ -306,8 +304,7 @@ async def register(user: UserRegister):
             "total_deposits": 0.0,
             "created_at": now,
             "last_login": now,
-            "banned": False,
-            "email_verified": False
+            "banned": False
         }
         
         result = supabase.table("users").insert(user_data).execute()
@@ -329,6 +326,16 @@ async def register(user: UserRegister):
                     supabase.table("users").update({
                         "xcoin_balance": new_balance
                     }).eq("id", referrer.data[0]["id"]).execute()
+                    
+                    # Record referral
+                    supabase.table("referrals").insert({
+                        "referrer_id": referrer.data[0]["id"],
+                        "referred_id": user_id,
+                        "bonus_amount": 50.0,
+                        "status": "completed",
+                        "completed_at": now
+                    }).execute()
+                    
                     logger.info(f"Referral bonus applied")
             except Exception as e:
                 logger.error(f"Referral error: {e}")
@@ -346,7 +353,7 @@ async def register(user: UserRegister):
                 "xcoin_balance": 1000.0,
                 "role": "user",
                 "vip_level": 1,
-                "referral_code": referral_code
+                "referral_code": result.data[0].get("referral_code", "")
             }
         }
         
@@ -396,15 +403,25 @@ async def login(user: UserLogin):
                 content={"detail": "Account banned"}
             )
         
-        # Update last login - FIXED: Ensure string format
+        # Update last login - FIXED for TIMESTAMP WITH TIME ZONE
         try:
-            now = datetime.utcnow().isoformat()
+            from datetime import datetime
+            import pytz
+            
+            # Get current UTC time with timezone
+            now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+            now_str = now.isoformat()
+            
+            # Update last_login
             supabase.table("users").update({
-                "last_login": now
+                "last_login": now_str
             }).eq("id", user_data["id"]).execute()
+            
+            logger.info(f"Updated last_login for user: {user_data['username']}")
+            
         except Exception as e:
-            logger.error(f"Failed to update last_login: {e}")
-            # Continue anyway - this shouldn't block login
+            # If update fails, log but don't block login
+            logger.warning(f"Could not update last_login: {e}")
         
         # Create token
         token = create_access_token({"sub": user_data["id"], "role": user_data["role"]})
@@ -420,7 +437,7 @@ async def login(user: UserLogin):
                 "roblox_id": user_data.get("roblox_id", ""),
                 "xcoin_balance": float(user_data["xcoin_balance"]),
                 "role": user_data["role"],
-                "vip_level": user_data.get("vip_level", 1),
+                "vip_level": int(user_data.get("vip_level", 1)),
                 "referral_code": user_data.get("referral_code", "")
             }
         }
@@ -484,6 +501,7 @@ async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user
                 content={"detail": "Insufficient balance"}
             )
         
+        balance_before = current_user["xcoin_balance"]
         grid = [[get_weighted_symbol() for _ in range(5)] for _ in range(3)]
         
         total_multiplier = 0
@@ -499,8 +517,29 @@ async def play_slots(bet: GameBet, current_user: dict = Depends(get_current_user
                 total_multiplier += SLOTS_PAYOUTS[symbol].get(count, 0)
         
         win_amount = bet.xcoin_amount * (total_multiplier / 100)
-        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
+        new_balance = balance_before - bet.xcoin_amount + win_amount
         
+        # Record game history
+        game_data = {
+            "reel_grid": grid,
+            "total_multiplier": total_multiplier,
+            "symbols_used": SLOTS_SYMBOLS
+        }
+        
+        supabase.table("game_history").insert({
+            "user_id": current_user["id"],
+            "game_type": "slots",
+            "bet_amount": bet.xcoin_amount,
+            "win_amount": win_amount,
+            "multiplier": total_multiplier / 100,
+            "outcome": "win" if win_amount > bet.xcoin_amount else "lose",
+            "balance_before": balance_before,
+            "balance_after": new_balance,
+            "game_data": game_data,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        
+        # Update user balance and stats
         supabase.table("users").update({
             "xcoin_balance": new_balance,
             "total_bets": current_user.get("total_bets", 0) + 1,
@@ -546,6 +585,7 @@ async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)
                 content={"detail": "Target must be between 2 and 98"}
             )
         
+        balance_before = current_user["xcoin_balance"]
         roll = random.uniform(0, 100)
         
         win = False
@@ -561,8 +601,23 @@ async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)
         
         actual_multiplier = fair_multiplier * HOUSE_EDGE_DICE
         win_amount = bet.xcoin_amount * actual_multiplier if win else 0
-        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
+        new_balance = balance_before - bet.xcoin_amount + win_amount
         
+        # Record game history
+        supabase.table("game_history").insert({
+            "user_id": current_user["id"],
+            "game_type": "dice",
+            "bet_amount": bet.xcoin_amount,
+            "win_amount": win_amount,
+            "multiplier": actual_multiplier if win else 0,
+            "outcome": "win" if win else "lose",
+            "balance_before": balance_before,
+            "balance_after": new_balance,
+            "game_data": {"roll": roll, "condition": condition, "target": target},
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
+        
+        # Update user balance
         supabase.table("users").update({
             "xcoin_balance": new_balance,
             "total_bets": current_user.get("total_bets", 0) + 1,
@@ -585,299 +640,8 @@ async def play_dice(bet: GameBet, current_user: dict = Depends(get_current_user)
         )
 
 # ============================================
-# GAME: CRASH (3% House Edge)
-# ============================================
-
-CRASH_HOUSE_EDGE = 0.03
-
-@app.post("/api/games/crash/play")
-async def play_crash(bet: GameBet, current_user: dict = Depends(get_current_user)):
-    try:
-        if bet.xcoin_amount > current_user["xcoin_balance"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Insufficient balance"}
-            )
-        
-        random_value = random.random()
-        crash_point = 1 / (1 - random_value) * (1 - CRASH_HOUSE_EDGE)
-        crash_point = min(crash_point, 10000)
-        
-        cashout_at = bet.params.get("cashout_at", 1.0)
-        
-        win = cashout_at < crash_point
-        multiplier = cashout_at if win else 0
-        win_amount = bet.xcoin_amount * multiplier if win else 0
-        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
-        
-        supabase.table("users").update({
-            "xcoin_balance": new_balance,
-            "total_bets": current_user.get("total_bets", 0) + 1,
-            "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
-            "total_won": current_user.get("total_won", 0) + win_amount
-        }).eq("id", current_user["id"]).execute()
-        
-        return {
-            "result": {"crash_point": round(crash_point, 2), "cashout_at": cashout_at},
-            "outcome": "win" if win else "lose",
-            "win_amount": round(win_amount, 2),
-            "multiplier": multiplier,
-            "new_balance": round(new_balance, 2)
-        }
-    except Exception as e:
-        logger.error(f"Crash error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-# ============================================
-# GAME: MINES (5% House Edge)
-# ============================================
-
-MINES_MULTIPLIERS = {
-    0: 1.00, 1: 1.20, 2: 1.45, 3: 1.80, 4: 2.20, 5: 2.70,
-    6: 3.30, 7: 4.10, 8: 5.00, 9: 6.20, 10: 7.80, 11: 9.80,
-    12: 12.50, 13: 16.00, 14: 20.50, 15: 26.50, 16: 34.00,
-    17: 44.00, 18: 57.00, 19: 74.00, 20: 96.00
-}
-
-@app.post("/api/games/mines/play")
-async def play_mines(bet: GameBet, current_user: dict = Depends(get_current_user)):
-    try:
-        if bet.xcoin_amount > current_user["xcoin_balance"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Insufficient balance"}
-            )
-        
-        revealed_count = bet.params.get("revealed_count", 0)
-        position = bet.params.get("position", None)
-        
-        if position is not None:
-            # Check if hit mine (5 mines in 25 tiles = 20% chance)
-            is_mine = random.random() < 0.2
-            
-            if is_mine:
-                new_balance = current_user["xcoin_balance"] - bet.xcoin_amount
-                supabase.table("users").update({
-                    "xcoin_balance": new_balance,
-                    "total_bets": current_user.get("total_bets", 0) + 1,
-                    "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount
-                }).eq("id", current_user["id"]).execute()
-                
-                return {
-                    "outcome": "lose",
-                    "win_amount": 0,
-                    "new_balance": round(new_balance, 2),
-                    "hit_mine": True
-                }
-            
-            multiplier = MINES_MULTIPLIERS.get(revealed_count + 1, 100) * 0.95  # 5% house edge
-            win_amount = bet.xcoin_amount * multiplier
-            new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
-            
-            supabase.table("users").update({
-                "xcoin_balance": new_balance,
-                "total_bets": current_user.get("total_bets", 0) + 1,
-                "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
-                "total_won": current_user.get("total_won", 0) + win_amount
-            }).eq("id", current_user["id"]).execute()
-            
-            return {
-                "outcome": "win" if win_amount > bet.xcoin_amount else "continue",
-                "win_amount": round(win_amount, 2),
-                "new_balance": round(new_balance, 2),
-                "multiplier": round(multiplier, 2),
-                "hit_mine": False
-            }
-        
-        return {"game_started": True, "bet_amount": bet.xcoin_amount}
-        
-    except Exception as e:
-        logger.error(f"Mines error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-# ============================================
-# GAME: PLINKO
-# ============================================
-
-PLINKO_PAYOUTS = {
-    "low": [0.5, 1, 1.5, 2, 1.5, 1, 0.5],
-    "medium": [0.2, 0.5, 1, 2, 5, 2, 1, 0.5, 0.2],
-    "high": [0.1, 0.2, 0.5, 1, 2, 5, 10, 5, 2, 1, 0.5, 0.2, 0.1]
-}
-RISK_HOUSE_EDGE = {"low": 0.01, "medium": 0.03, "high": 0.05}
-
-@app.post("/api/games/plinko/play")
-async def play_plinko(bet: GameBet, current_user: dict = Depends(get_current_user)):
-    try:
-        if bet.xcoin_amount > current_user["xcoin_balance"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Insufficient balance"}
-            )
-        
-        risk = bet.params.get("risk", "medium")
-        if risk not in PLINKO_PAYOUTS:
-            risk = "medium"
-        
-        payouts = PLINKO_PAYOUTS[risk]
-        bucket = random.randint(0, len(payouts) - 1)
-        multiplier = payouts[bucket] * (1 - RISK_HOUSE_EDGE.get(risk, 0.03))
-        
-        win_amount = bet.xcoin_amount * multiplier
-        new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
-        
-        supabase.table("users").update({
-            "xcoin_balance": new_balance,
-            "total_bets": current_user.get("total_bets", 0) + 1,
-            "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
-            "total_won": current_user.get("total_won", 0) + win_amount
-        }).eq("id", current_user["id"]).execute()
-        
-        return {
-            "result": {"bucket": bucket, "risk": risk},
-            "outcome": "win" if multiplier > 1 else "lose",
-            "win_amount": round(win_amount, 2),
-            "multiplier": round(multiplier, 2),
-            "new_balance": round(new_balance, 2)
-        }
-    except Exception as e:
-        logger.error(f"Plinko error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-# ============================================
-# GAME: BLACKJACK
-# ============================================
-
-@app.post("/api/games/blackjack/play")
-async def play_blackjack(bet: GameBet, current_user: dict = Depends(get_current_user)):
-    try:
-        if bet.xcoin_amount > current_user["xcoin_balance"]:
-            return JSONResponse(
-                status_code=400,
-                content={"detail": "Insufficient balance"}
-            )
-        
-        action = bet.params.get("action", "deal")
-        
-        if action == "deal":
-            return {
-                "game_started": True,
-                "bet_amount": bet.xcoin_amount,
-                "message": "Game started! Use action 'hit' or 'stand'"
-            }
-        elif action == "hit":
-            player_score = bet.params.get("player_score", 0)
-            new_card = random.randint(1, 11)
-            new_score = player_score + new_card
-            
-            if new_score > 21:
-                new_balance = current_user["xcoin_balance"] - bet.xcoin_amount
-                supabase.table("users").update({
-                    "xcoin_balance": new_balance,
-                    "total_bets": current_user.get("total_bets", 0) + 1,
-                    "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount
-                }).eq("id", current_user["id"]).execute()
-                
-                return {
-                    "outcome": "lose",
-                    "win_amount": 0,
-                    "new_balance": round(new_balance, 2),
-                    "bust": True,
-                    "new_score": new_score
-                }
-            
-            return {
-                "outcome": "continue",
-                "new_score": new_score,
-                "new_card": new_card
-            }
-        elif action == "stand":
-            dealer_score = bet.params.get("dealer_score", 15)
-            player_score = bet.params.get("player_score", 0)
-            
-            if dealer_score < 17:
-                dealer_score += random.randint(1, 11)
-            
-            win = player_score > dealer_score or dealer_score > 21
-            win_amount = bet.xcoin_amount * 2 if win else 0
-            new_balance = current_user["xcoin_balance"] - bet.xcoin_amount + win_amount
-            
-            supabase.table("users").update({
-                "xcoin_balance": new_balance,
-                "total_bets": current_user.get("total_bets", 0) + 1,
-                "total_wagered": current_user.get("total_wagered", 0) + bet.xcoin_amount,
-                "total_won": current_user.get("total_won", 0) + win_amount
-            }).eq("id", current_user["id"]).execute()
-            
-            return {
-                "outcome": "win" if win else "lose",
-                "win_amount": round(win_amount, 2),
-                "new_balance": round(new_balance, 2),
-                "dealer_score": dealer_score
-            }
-        
-    except Exception as e:
-        logger.error(f"Blackjack error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": "Game error"}
-        )
-
-# ============================================
 # PAYMENT ROUTES
 # ============================================
-
-@app.post("/api/payments/create-stripe-session")
-async def create_stripe_session(payment: StripePayment, current_user: dict = Depends(get_current_user)):
-    """Create Stripe checkout session"""
-    if not STRIPE_SECRET_KEY:
-        return JSONResponse(
-            status_code=400,
-            content={"detail": "Stripe not configured. Please contact support."}
-        )
-    
-    try:
-        usd_amount = payment.amount_xcoin * 0.01
-        
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price_data': {
-                    'currency': 'usd',
-                    'product_data': {
-                        'name': f'{int(payment.amount_xcoin)} XCoin',
-                        'description': f'Premium casino credits for XBET',
-                    },
-                    'unit_amount': int(usd_amount * 100),
-                },
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url="https://xbet-inky.vercel.app/success?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url="https://xbet-inky.vercel.app/cancel",
-            metadata={
-                'user_id': current_user['id'],
-                'xcoin_amount': str(payment.amount_xcoin),
-                'username': current_user['username']
-            }
-        )
-        
-        return {"session_id": session.id, "url": session.url}
-    except Exception as e:
-        logger.error(f"Stripe error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"detail": f"Payment creation failed: {str(e)}"}
-        )
 
 @app.post("/api/payments/roblox-purchase")
 async def roblox_purchase(purchase: RobloxPurchase, current_user: dict = Depends(get_current_user)):
@@ -885,14 +649,27 @@ async def roblox_purchase(purchase: RobloxPurchase, current_user: dict = Depends
     try:
         xcoin_amount = purchase.amount_robux
         new_balance = current_user["xcoin_balance"] + xcoin_amount
+        now = datetime.utcnow().isoformat()
         
+        # Record purchase
+        supabase.table("purchases").insert({
+            "user_id": current_user["id"],
+            "amount": xcoin_amount,
+            "payment_method": "roblox",
+            "status": "completed",
+            "roblox_amount": purchase.amount_robux,
+            "roblox_product_id": purchase.product_id,
+            "completed_at": now
+        }).execute()
+        
+        # Update user balance and stats
         supabase.table("users").update({
             "xcoin_balance": new_balance,
             "total_purchases": current_user.get("total_purchases", 0) + 1,
             "total_deposits": current_user.get("total_deposits", 0) + xcoin_amount
         }).eq("id", current_user["id"]).execute()
         
-        # Update VIP level
+        # Update VIP level based on total deposits
         total_deposits = current_user.get("total_deposits", 0) + xcoin_amount
         vip_level = min(10, int(total_deposits / 5000) + 1)
         supabase.table("users").update({"vip_level": vip_level}).eq("id", current_user["id"]).execute()
@@ -969,10 +746,11 @@ async def get_online_players():
 async def claim_daily_bonus(current_user: dict = Depends(get_current_user)):
     try:
         last_claim = current_user.get("last_daily_claim")
+        now = datetime.utcnow()
         
         if last_claim:
-            last_date = datetime.fromisoformat(last_claim)
-            if (datetime.utcnow() - last_date).days < 1:
+            last_date = datetime.fromisoformat(last_claim.replace('Z', '+00:00'))
+            if (now - last_date).days < 1:
                 return JSONResponse(
                     status_code=400,
                     content={"detail": "Already claimed today"}
@@ -980,11 +758,11 @@ async def claim_daily_bonus(current_user: dict = Depends(get_current_user)):
         
         bonus = 100.0
         new_balance = current_user["xcoin_balance"] + bonus
-        now = datetime.utcnow().isoformat()
+        now_str = now.isoformat()
         
         supabase.table("users").update({
             "xcoin_balance": new_balance,
-            "last_daily_claim": now
+            "last_daily_claim": now_str
         }).eq("id", current_user["id"]).execute()
         
         return {"bonus": bonus, "new_balance": round(new_balance, 2)}
@@ -1026,7 +804,10 @@ async def ban_user(user_id: str, ban_data: Dict, current_user: dict = Depends(ge
         )
     
     try:
-        supabase.table("users").update({"banned": ban_data.get("banned", True)}).eq("id", user_id).execute()
+        supabase.table("users").update({
+            "banned": ban_data.get("banned", True),
+            "ban_reason": ban_data.get("reason", "")
+        }).eq("id", user_id).execute()
         return {"message": "User updated"}
     except Exception as e:
         logger.error(f"Ban user error: {e}")
@@ -1044,7 +825,9 @@ async def update_balance(user_id: str, balance_data: Dict, current_user: dict = 
         )
     
     try:
-        supabase.table("users").update({"xcoin_balance": balance_data.get("balance", 0)}).eq("id", user_id).execute()
+        supabase.table("users").update({
+            "xcoin_balance": balance_data.get("balance", 0)
+        }).eq("id", user_id).execute()
         return {"message": "Balance updated"}
     except Exception as e:
         logger.error(f"Update balance error: {e}")
@@ -1052,75 +835,6 @@ async def update_balance(user_id: str, balance_data: Dict, current_user: dict = 
             status_code=500,
             content={"detail": "Failed to update balance"}
         )
-
-# ============================================
-# WEBSOCKET
-# ============================================
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
-    
-    async def connect(self, websocket: WebSocket, user_id: str):
-        await websocket.accept()
-        self.active_connections[user_id] = websocket
-        logger.info(f"User {user_id} connected")
-    
-    def disconnect(self, user_id: str):
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-            logger.info(f"User {user_id} disconnected")
-    
-    async def broadcast(self, message: str):
-        for connection in self.active_connections.values():
-            try:
-                await connection.send_text(message)
-            except:
-                pass
-
-manager = ConnectionManager()
-
-@app.websocket("/ws/{token}")
-async def websocket_endpoint(websocket: WebSocket, token: str):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        
-        if not user_id:
-            await websocket.close(code=1008)
-            return
-        
-        await manager.connect(websocket, user_id)
-        
-        # Send welcome message
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "message": "Connected to XBET WebSocket",
-            "timestamp": datetime.utcnow().isoformat()
-        }))
-        
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            if message.get("type") == "chat":
-                user = supabase.table("users").select("username").eq("id", user_id).execute()
-                if user.data:
-                    await manager.broadcast(json.dumps({
-                        "type": "chat",
-                        "username": user.data[0]["username"],
-                        "message": message.get("message", ""),
-                        "timestamp": datetime.utcnow().isoformat()
-                    }))
-            elif message.get("type") == "ping":
-                await websocket.send_text(json.dumps({
-                    "type": "pong",
-                    "timestamp": datetime.utcnow().isoformat()
-                }))
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        manager.disconnect(user_id)
 
 # ============================================
 # INITIALIZATION
