@@ -4,7 +4,6 @@ supabase
 python-jose[cryptography]
 passlib[bcrypt]
 python-dotenv
-redis
 stripe
 httpx
 websockets
@@ -13,3 +12,4 @@ python-multipart
 bcrypt
 cryptography
 python-dateutil
+requests
