@@ -17,7 +17,7 @@ from decimal import Decimal, ROUND_DOWN
 import hashlib
 import hmac
 import time
-from enum import Enum  # <-- THIS WAS MISSING
+from enum import Enum
 import uuid
 import logging
 import stripe
@@ -49,9 +49,15 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
-SECRET_KEY = os.getenv("SECRET_KEY", "xbet_super_secret_key_2024_master_ultra_secure")
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 JWT_EXPIRY = int(os.getenv("JWT_EXPIRY", 86400))
+
+# Admin Credentials from Environment Variables
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_REFERRAL_CODE = os.getenv("ADMIN_REFERRAL_CODE")
 
 # Stripe Configuration
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
@@ -73,7 +79,7 @@ ROBLOX_PASS_IDS = {
 # SendGrid Configuration
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL")
-SENDGRID_FROM_NAME = os.getenv("SENDGRID_FROM_NAME", "XBET Casino")
+SENDGRID_FROM_NAME = os.getenv("SENDGRID_FROM_NAME")
 SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO")
 
 # Database Configuration
@@ -203,13 +209,32 @@ def init_database():
         test_query = supabase.table("users").select("*").limit(1).execute()
         logger.info("Users table exists")
         
-        # Check if admin exists
-        admin_check = supabase.table("users").select("*").eq("email", "xotiicglizzy@gmail.com").execute()
+        # Check if admin exists using email from env
+        admin_check = supabase.table("users").select("*").eq("email", ADMIN_EMAIL).execute()
         
-        
+        if not admin_check.data:
+            admin_id = str(uuid.uuid4())
+            admin_data = {
+                "id": admin_id,
+                "username": ADMIN_USERNAME,
+                "email": ADMIN_EMAIL,
+                "password_hash": hash_password(ADMIN_PASSWORD),
+                "xcoin_balance": 10000000.0,
+                "role": "admin",
+                "vip_level": 10,
+                "referral_code": ADMIN_REFERRAL_CODE,
+                "total_bets": 0,
+                "total_wagered": 0,
+                "total_won": 0,
+                "total_purchases": 0,
+                "total_deposits": 10000000.0,
+                "created_at": datetime.utcnow().isoformat(),
+                "last_login": datetime.utcnow().isoformat(),
+                "banned": False
+            }
             
             supabase.table("users").insert(admin_data).execute()
-            logger.info("Admin user created successfully: xotiic")
+            logger.info(f"Admin user created successfully: {ADMIN_USERNAME}")
         else:
             logger.info("Admin user already exists")
             
@@ -839,6 +864,8 @@ if __name__ == "__main__":
     print(f"XBET Casino Backend Starting...")
     print(f"Host: {host}")
     print(f"Port: {port}")
+    print(f"Admin Email: {ADMIN_EMAIL}")
+    print(f"Admin Username: {ADMIN_USERNAME}")
     print(f"Supabase URL: {SUPABASE_URL[:50] if SUPABASE_URL else 'NOT SET'}...")
     print(f"{'='*50}\n")
     
