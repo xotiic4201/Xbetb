@@ -15,10 +15,14 @@ from supabase import create_client, Client
 import os
 from decimal import Decimal, ROUND_DOWN
 import hashlib
+import hmac
+import time
+from enum import Enum  # <-- THIS WAS MISSING
 import uuid
 import logging
 import stripe
 import requests
+from functools import lru_cache
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -37,15 +41,15 @@ app = FastAPI(title="XBet Casino - Premium Edition", version="3.0.0")
 # CORS - Allow all origins for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://xbet-inky.vercel.app"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["https://xbet-inky.vercel.app"],
+    allow_headers=["https://xbet-inky.vercel.app"],
 )
 
 # Security
 security = HTTPBearer()
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY", "xbet_super_secret_key_2024_master_ultra_secure")
 ALGORITHM = "HS256"
 JWT_EXPIRY = int(os.getenv("JWT_EXPIRY", 86400))
 
@@ -80,7 +84,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     logger.error("Supabase credentials not configured!")
     print("ERROR: SUPABASE_URL and SUPABASE_KEY must be set in .env file")
     print("Please create a .env file with your Supabase credentials")
-    exit(1)
 
 try:
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -88,7 +91,6 @@ try:
 except Exception as e:
     logger.error(f"Supabase connection failed: {e}")
     print(f"ERROR: Failed to connect to Supabase: {e}")
-    exit(1)
 
 # Models
 class UserRole(str, Enum):
@@ -251,7 +253,7 @@ async def health_check():
         "status": "ok",
         "timestamp": datetime.utcnow().isoformat(),
         "version": "3.0.0",
-        "supabase": "connected"
+        "supabase": "connected" if SUPABASE_URL and SUPABASE_KEY else "not configured"
     }
 
 @app.post("/api/auth/register")
@@ -778,6 +780,62 @@ async def claim_daily_bonus(current_user: dict = Depends(get_current_user)):
     return {"bonus": bonus, "new_balance": new_balance}
 
 # ============================================
+# WEBSOCKET (Basic)
+# ============================================
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+    
+    async def connect(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        self.active_connections[user_id] = websocket
+    
+    def disconnect(self, user_id: str):
+        if user_id in self.active_connections:
+            del self.active_connections[user_id]
+    
+    async def broadcast(self, message: str):
+        for connection in self.active_connections.values():
+            try:
+                await connection.send_text(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws/{token}")
+async def websocket_endpoint(websocket: WebSocket, token: str):
+    """WebSocket endpoint"""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        
+        if not user_id:
+            await websocket.close(code=1008)
+            return
+        
+        await manager.connect(websocket, user_id)
+        
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message.get("type") == "chat":
+                user = supabase.table("users").select("username").eq("id", user_id).execute()
+                if user.data:
+                    await manager.broadcast(json.dumps({
+                        "type": "chat",
+                        "username": user.data[0]["username"],
+                        "message": message.get("message", ""),
+                        "timestamp": datetime.utcnow().isoformat()
+                    }))
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        manager.disconnect(user_id)
+
+# ============================================
 # INITIALIZATION
 # ============================================
 
@@ -785,7 +843,8 @@ async def claim_daily_bonus(current_user: dict = Depends(get_current_user)):
 async def startup_event():
     """Initialize on startup"""
     logger.info("Starting XBET Casino backend...")
-    init_database()
+    if SUPABASE_URL and SUPABASE_KEY:
+        init_database()
     logger.info("XBET Casino backend started successfully")
 
 if __name__ == "__main__":
@@ -799,7 +858,7 @@ if __name__ == "__main__":
     print(f"XBET Casino Backend Starting...")
     print(f"Host: {host}")
     print(f"Port: {port}")
-    print(f"Supabase URL: {SUPABASE_URL[:50]}...")
+    print(f"Supabase URL: {SUPABASE_URL[:50] if SUPABASE_URL else 'NOT SET'}...")
     print(f"{'='*50}\n")
     
     try:
@@ -807,7 +866,8 @@ if __name__ == "__main__":
             app,
             host=host,
             port=port,
-            reload=False
+            reload=False,
+            log_level="info"
         )
     except KeyboardInterrupt:
         print("\nShutting down...")
