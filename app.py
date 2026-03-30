@@ -45,18 +45,18 @@ app.add_middleware(
 
 # Security
 security = HTTPBearer()
-SECRET_KEY = os.getenv("SECRET_KEY", "xbet_super_secret_key_2024_master_ultra_secure")
+SECRET_KEY = os.getenv("SECRET_KEY")
 ALGORITHM = "HS256"
 JWT_EXPIRY = int(os.getenv("JWT_EXPIRY", 86400))
 
 # Admin Credentials from Environment
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@xbet.com")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin123!")
-ADMIN_REFERRAL_CODE = os.getenv("ADMIN_REFERRAL_CODE", "ADMINVIP")
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_REFERRAL_CODE = os.getenv("ADMIN_REFERRAL_CODE")
 
 # Stripe Configuration
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
@@ -64,19 +64,19 @@ if STRIPE_SECRET_KEY:
 ROBLOX_API_KEY = os.getenv("ROBLOX_API_KEY", "")
 ROBLOX_GROUP_ID = os.getenv("ROBLOX_GROUP_ID", "")
 ROBLOX_PASS_IDS = {
-    100: os.getenv("ROBLOX_PASS_100", "xbet_100_robux"),
-    500: os.getenv("ROBLOX_PASS_500", "xbet_500_robux"),
-    1000: os.getenv("ROBLOX_PASS_1000", "xbet_1000_robux"),
-    5000: os.getenv("ROBLOX_PASS_5000", "xbet_5000_robux"),
-    10000: os.getenv("ROBLOX_PASS_10000", "xbet_10000_robux"),
-    50000: os.getenv("ROBLOX_PASS_50000", "xbet_50000_robux")
+    100: os.getenv("ROBLOX_PASS_100"),
+    500: os.getenv("ROBLOX_PASS_500"),
+    1000: os.getenv("ROBLOX_PASS_1000"),
+    5000: os.getenv("ROBLOX_PASS_5000"),
+    10000: os.getenv("ROBLOX_PASS_10000"),
+    50000: os.getenv("ROBLOX_PASS_50000")
 }
 
 # SendGrid Configuration
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
-SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL", "noreply@xbet.com")
+SENDGRID_FROM_EMAIL = os.getenv("SENDGRID_FROM_EMAIL")
 SENDGRID_FROM_NAME = os.getenv("SENDGRID_FROM_NAME", "XBET Casino")
-SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO", "support@xbet.com")
+SENDGRID_REPLY_TO = os.getenv("SENDGRID_REPLY_TO")
 
 # Database Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
